@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Simplexcel v1.0 API 分析报告</title>
+<style>
+  :root { --ink:#1a1d23; --sub:#5a6472; --line:#e4e8ee; --bg:#ffffff; --card:#f7f9fb; --accent:#0b6bcb; --warn:#b45309; --ok:#0f7b4f; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:40px 24px; background:var(--bg); color:var(--ink);
+         font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; font-size:14.5px; line-height:1.7; }
+  .wrap { max-width:1080px; margin:0 auto; }
+  h1 { font-size:26px; margin:0 0 4px; }
+  h2 { font-size:19px; margin:38px 0 12px; padding-bottom:6px; border-bottom:2px solid var(--line); }
+  h3 { font-size:15.5px; margin:22px 0 8px; }
+  .meta { color:var(--sub); font-size:13px; margin-bottom:24px; }
+  table { width:100%; border-collapse:collapse; margin:12px 0; font-size:13.5px; }
+  th,td { border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--card); font-weight:600; white-space:nowrap; }
+  tr:nth-child(even) td { background:#fbfcfd; }
+  code { background:var(--card); border:1px solid var(--line); border-radius:4px;
+         padding:1px 6px; font-family:Consolas,"JetBrains Mono",monospace; font-size:12.8px; color:#0b4a8f; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px 18px; margin:14px 0; }
+  .tag { display:inline-block; border-radius:4px; padding:0 8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .t-remote { background:#e3f0fc; color:#0b5aa0; border:1px solid #b9d7f5; }
+  .t-local  { background:#e6f6ec; color:#0f6b3f; border:1px solid #bfe6cd; }
+  .flow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:10px 0 4px;
+          font-family:Consolas,monospace; font-size:13px; }
+  .flow .box { border:1.5px solid var(--accent); border-radius:8px; padding:8px 14px; background:#f2f8ff; }
+  .flow .arr { color:var(--sub); }
+  .note { color:var(--sub); font-size:13px; }
+  ul { margin:6px 0; padding-left:22px; }
+  li { margin:3px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Simplexcel v1.0 · API 调用分析报告</h1>
+<div class="meta">目标文件：D:\tabbit下载\Simplexcel-v1.0\Simplexcel.exe（37,762,003 字节）｜分析方式：静态二进制分析（pkg 快照提取）｜分析时间：2026-09-13</div>
+
+<h2>一、软件架构</h2>
+<div class="card">
+  <p><b>技术栈：</b>vercel/pkg 5.8.1 打包的 Node.js 18（node18-win-x64）单文件 HTTP 服务。内嵌 <code>package.json</code> 显示：<code>main: server.js</code>，前端资源以 <code>pkg.assets: ["public/**/*"]</code> 明文嵌入，server.js 主逻辑编译为 V8 字节码（快照路径 <code>C:\snapshot\simple\server.js</code>）。</p>
+  <div class="flow">
+    <span class="box">浏览器 Excel 风格 UI（明文前端）</span><span class="arr">⇄ HTTP</span>
+    <span class="box">本地服务 localhost:3000 起（占用自动顺延）</span><span class="arr">⇄ HTTPS 代理</span>
+    <span class="box">simple.imsummer.cn API v2</span>
+  </div>
+  <p>所有远端请求由本地服务器中转，浏览器 UI 不直接连远端。Token 存于 exe 同目录 <code>config.json</code>，可被环境变量 <code>SIMPLE_TOKEN</code> 覆盖。</p>
+</div>
+
+<h2>二、远端 API（本地服务器 → <code>https://simple.imsummer.cn</code>）</h2>
+<p>路径常量提取自 server.js 字节码字符串表（偏移 ≈ 37,185,000–37,190,000）。前缀均为 <code>/api/v2</code>：</p>
+<table>
+  <tr><th>方法</th><th>路径</th><th>参数 / Body</th><th>功能</th></tr>
+  <tr><td>GET</td><td><code>/api/v2/posts/channels/all</code></td><td><code>per_page</code>、<code>last_id</code>、<code>model_type</code> 等</td><td>广场帖子列表（全频道）</td></tr>
+  <tr><td>GET</td><td><code>/api/v2/posts/recommendations</code></td><td><code>model_type=random</code> 等</td><td>推荐流（随机推荐）</td></tr>
+  <tr><td>GET</td><td><code>/api/v2/posts</code></td><td>同上</td><td>帖子列表（兜底/基础源）</td></tr>
+  <tr><td>GET</td><td><code>/api/v2/favourites?</code></td><td><code>per_page</code>、<code>last_id</code>（游标翻页）</td><td>我的收藏列表</td></tr>
+  <tr><td>POST / DELETE</td><td><code>/api/v2/votes</code></td><td>Body: <code>{ post_id }</code></td><td><b>点赞</b> / 取消点赞</td></tr>
+  <tr><td>POST / DELETE</td><td><code>/api/v2/favourites</code></td><td>Body: <code>{ post_id }</code></td><td><b>收藏</b> / 取消收藏</td></tr>
+  <tr><td>GET</td><td><code>/api/v2/comments?</code></td><td><code>post_id</code>、<code>per_page</code>、<code>last_id</code></td><td>评论列表</td></tr>
+  <tr><td>POST</td><td><code>/api/v2/comments</code></td><td>Body: <code>{ content, post_id }</code></td><td><b>发表评论</b></td></tr>
+  <tr><td>POST</td><td><code>/api/v2/comments/replies</code></td><td>Body: <code>{ content, comment_id }</code></td><td><b>回复评论</b></td></tr>
+  <tr><td>GET</td><td><code>/api/v2/current_user</code></td><td><code>refresh</code> 标志</td><td>当前登录用户信息</td></tr>
+</table>
+
+<h3>请求头（远端请求统一携带）</h3>
+<table>
+  <tr><th>Header</th><th>值</th><th>说明</th></tr>
+  <tr><td><code>Authorization</code></td><td>原始 token（<b>无</b> "Bearer" 前缀）</td><td>来自 config.json / SIMPLE_TOKEN / 页面粘贴</td></tr>
+  <tr><td><code>User-Agent</code></td><td><code>Mozilla/5.0 (Windows NT 10.0; Win64; x64) … Chrome/126.0 Safari/537.36</code></td><td>伪装 Chrome 126 浏览器</td></tr>
+  <tr><td><code>Accept</code></td><td><code>application/json, text/plain, */*</code></td><td>GET 请求</td></tr>
+  <tr><td><code>Content-Type</code></td><td><code>application/json</code></td><td>POST/DELETE 请求（JSON body）</td></tr>
+</table>
+
+<h2>三、本地 API（浏览器 UI → localhost 服务）</h2>
+<p>前端（明文资源）通过 fetch 调用本地路由，本地服务器再转发至远端 v2 API：</p>
+<table>
+  <tr><th>方法</th><th>路径</th><th>参数 / Body</th><th>功能</th><th>对应远端</th></tr>
+  <tr><td>GET</td><td><code>/api/posts</code></td><td><code>source</code>、<code>per_page</code>、<code>last_id</code></td><td>帖子列表（支持广场/推荐/收藏三种 source）</td><td>posts 三源之一</td></tr>
+  <tr><td>GET</td><td><code>/api/favourites</code></td><td><code>per_page=20</code>、<code>last_id</code></td><td>收藏列表翻页加载</td><td>/api/v2/favourites</td></tr>
+  <tr><td>POST / DELETE</td><td><code>/api/votes</code></td><td><code>{ post_id }</code></td><td>点赞 / 取消点赞</td><td>/api/v2/votes</td></tr>
+  <tr><td>POST / DELETE</td><td><code>/api/favourites</code></td><td><code>{ post_id }</code></td><td>收藏 / 取消收藏</td><td>/api/v2/favourites</td></tr>
+  <tr><td>GET</td><td><code>/api/comments</code></td><td><code>post_id</code>、<code>per_page=10</code>、<code>last_id</code></td><td>评论列表</td><td>/api/v2/comments</td></tr>
+  <tr><td>POST</td><td><code>/api/comments</code></td><td><code>{ content, post_id }</code></td><td>发表评论</td><td>/api/v2/comments</td></tr>
+  <tr><td>POST</td><td><code>/api/comments/replies</code></td><td><code>{ content, comment_id }</code></td><td>回复评论</td><td>/api/v2/comments/replies</td></tr>
+  <tr><td>POST</td><td><code>/api/token</code></td><td><code>{ token }</code></td><td>保存 token 到 config.json（writeFileSync）</td><td>—</td></tr>
+  <tr><td>POST</td><td><code>/api/login</code></td><td>—</td><td>用已有 token 验证登录，返回用户昵称/simple_id</td><td>/api/v2/current_user</td></tr>
+  <tr><td>POST</td><td><code>/api/logout</code></td><td>—</td><td>清除本地登录态</td><td>—</td></tr>
+  <tr><td>GET</td><td><code>/api/status</code></td><td>—</td><td>返回 <code>{ hasToken }</code> 判断登录态</td><td>—</td></tr>
+  <tr><td>GET</td><td><code>/api/me?refresh=1</code></td><td>—</td><td>当前用户信息（带缓存）</td><td>/api/v2/current_user</td></tr>
+  <tr><td>GET</td><td><code>/media?url=&lt;encoded&gt;</code></td><td>媒体原始 URL（七牛 <code>?imageView2/2/w/300</code> 缩略）</td><td>媒体代理：支持 Range 断点、Cache-Control 86400s</td><td>static-simple.imsummer.cn</td></tr>
+</table>
+
+<h2>四、媒体与静态资源</h2>
+<ul>
+  <li>图片/视频/音频一律走本地 <code>/media?url=</code> 代理转发到 <code>static-simple.imsummer.cn</code>（MEDIA_HOST 常量），服务器端透传 <code>Range</code> / <code>Content-Range</code>，附加 <code>Cache-Control: public, max-age=86400</code>。</li>
+  <li>缩略图用七牛云参数 <code>?imageView2/2/w/300</code> 在源 URL 上追加。</li>
+  <li>Token 无效时 UI 提示「登录已失效：请重新登录后在 config.json 中更新 token」（HTTP 401 分支）。</li>
+</ul>
+
+<h2>五、缓存机制（server.js 内部）</h2>
+<ul>
+  <li><code>POST_CACHE</code> / <code>POST_CACHE_TTL</code> — 帖子列表缓存</li>
+  <li><code>FAV_CACHE</code> / <code>FAV_CACHE_TTL</code> — 收藏缓存</li>
+  <li><code>COMMENT_CACHE</code> / <code>COMMENT_CACHE_TTL</code> — 评论缓存</li>
+  <li><code>ME_CACHE</code> — 用户信息缓存；<code>clearApiCaches</code> 在点赞/收藏/评论写操作后清缓存</li>
+</ul>
+
+<h2>六、分析证据位置</h2>
+<table>
+  <tr><th>证据</th><th>二进制内偏移</th><th>内容</th></tr>
+  <tr><td>package.json（明文）</td><td>≈ 37,187,700</td><td>name=simplexcel、pkg targets=node18-win-x64、devDependency pkg ^5.8.1</td></tr>
+  <tr><td>server.js 字符串表</td><td>≈ 37,161,466</td><td>Authorization / User-Agent(Chrome 126) / Accept 请求头常量</td></tr>
+  <tr><td>远端路径常量</td><td>≈ 37,186,000–37,189,000</td><td>全部 <code>/api/v2/*</code> 路径 + per_page/last_id/model_type 等参数名 + GET/POST/DELETE</td></tr>
+  <tr><td>前端 fetch 源码（明文）</td><td>≈ 37,193,000+</td><td>12 个 <code>fetch('/api/…')</code> 调用、mediaProxyUrl、GENDER_MAP、COLUMNS 表格列定义</td></tr>
+</table>
+<p class="note">注：server.js 编译为 V8 字节码无法直接还原源码，但字节码引用的全部字符串常量（路径/参数名/方法名/函数名）完整可读，上述表格均由这些常量与相邻逻辑常量交叉印证得出。</p>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,49 @@
+# ── 工具本地数据（项目相关，勿删，仅不入库）─────────────────────────
+.workbuddy/
+memory/
+
+
+# ── 构建产物（APK 体积大，不入库；构建命令见 README 或对话记录）──────
+dist/
+*.apk
+
+# ── 敏感凭证：契约第六节明确要求 token 不得入库 ──────────────────────
+token.txt
+*.token
+# 用户从浏览器里取出的 token 会被随手存成中文文件名，必须一并挡住
+*token*.txt
+*token*.json
+
+# ── 签名密钥：永久发布密钥只放 GitHub Secrets（见 .github/workflows/android-build.yml）──
+# 公开仓库，密钥绝不能进历史。
+# 本机两份副本都在 .workbuddy/ 下（.workbuddy/ 已整体忽略），这里再加一道兜底：
+#   .workbuddy/keys/simple-reader-release.jks          永久发布密钥库本体
+#   .workbuddy/keys/simple-reader-keystore.base64.txt  供 GitHub Secret 粘贴的单行副本
+*.jks
+*.keystore
+*keystore*.txt
+*debug-keystore*
+# key.properties 里写着密钥库绝对路径与口令：本机文件，云端由 workflow 生成
+key.properties
+
+# ── IDE / 编辑器 ─────────────────────────────────────────────────────
+.idea/
+*.iml
+
+# ── 实机数据备份（含个人内容，不入库）────────────────────────────────────
+backups/
+# adb backup 产物，可能含个人数据；按 git add -A 的习惯必须显式挡住
+backup.ab
+*.ab
+
+# ── Flutter 工具本地状态 ─────────────────────────────────────────────
+app/.flutter_tool_state
+
+# ── 系统杂项 ─────────────────────────────────────────────────────────
+Thumbs.db
+Desktop.ini
+
+# ── 会话/命令输出草稿：本机 `命令 > _xxx.txt` 的落盘文件，从不入库 ──────
+# 来源：沙箱取输出必须先落盘再 Read（见 memory 踩坑铁律），日积月累会污染 git add -A
+_*.txt
+analysis/_*

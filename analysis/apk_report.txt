@@ -1,0 +1,68 @@
+APK: D:\debug\A-anduoid Project\simplesousuo\dist\Simple搜索-v1.7.1-release.apk
+File size on disk: 50.16 MB
+Entries: 66, uncompressed total: 50.43 MB, compressed total (zip payload): 50.08 MB
+
+== Group summary (compressed / uncompressed) ==
+  lib/x86_64 (ABI)                 18.32 MB /     18.32 MB
+  lib/arm64-v8a (ABI)              16.89 MB /     16.89 MB
+  lib/armeabi-v7a (ABI)            14.50 MB /     14.50 MB
+  classes*.dex (code)             236.12 KB /    515.05 KB
+  assets/                         109.34 KB /    144.94 KB
+  other                            13.10 KB /     54.45 KB
+  resources.arsc                    6.76 KB /      6.76 KB
+  res/                              4.08 KB /      4.24 KB
+  AndroidManifest.xml               2.02 KB /      7.16 KB
+  META-INF/                           387 B /        337 B
+
+== ABI detail (compressed .so sizes) ==
+  [arm64-v8a]
+      libflutter.so                                11.20 MB
+      libapp.so                                     5.69 MB
+  [armeabi-v7a]
+      libflutter.so                                 8.22 MB
+      libapp.so                                     6.28 MB
+  [x86_64]
+      libflutter.so                                12.45 MB
+      libapp.so                                     5.88 MB
+
+== Top 40 entries by compressed size ==
+      12.45 MB (unc     12.45 MB)  lib/x86_64/libflutter.so
+      11.20 MB (unc     11.20 MB)  lib/arm64-v8a/libflutter.so
+       8.22 MB (unc      8.22 MB)  lib/armeabi-v7a/libflutter.so
+       6.28 MB (unc      6.28 MB)  lib/armeabi-v7a/libapp.so
+       5.88 MB (unc      5.88 MB)  lib/x86_64/libapp.so
+       5.69 MB (unc      5.69 MB)  lib/arm64-v8a/libapp.so
+     236.12 KB (unc    515.05 KB)  classes.dex
+      93.95 KB (unc     95.78 KB)  assets/flutter_assets/NOTICES.Z
+       6.76 KB (unc      6.76 KB)  resources.arsc
+       6.40 KB (unc     10.18 KB)  assets/flutter_assets/fonts/MaterialIcons-Regular.otf
+       5.37 KB (unc     30.20 KB)  kotlin/kotlin.kotlin_builtins
+       5.15 KB (unc     21.34 KB)  assets/flutter_assets/shaders/ink_sparkle.frag
+       3.42 KB (unc     17.20 KB)  assets/flutter_assets/shaders/stretch_effect.frag
+       2.02 KB (unc      7.16 KB)  AndroidManifest.xml
+       1.85 KB (unc      8.42 KB)  kotlin/collections/collections.kotlin_builtins
+       1.41 KB (unc      4.75 KB)  kotlin/reflect/reflect.kotlin_builtins
+       1.37 KB (unc      1.37 KB)  res/o-.png
+       1.35 KB (unc      4.25 KB)  kotlin/ranges/ranges.kotlin_builtins
+       1.08 KB (unc      2.81 KB)  kotlin/concurrent/atomics/atomics.kotlin_builtins
+         994 B (unc        994 B)  res/RJ.png
+         782 B (unc      1.70 KB)  DebugProbesKt.bin
+         684 B (unc        684 B)  res/FS.png
+         542 B (unc       1022 B)  kotlin/annotation/annotation.kotlin_builtins
+         507 B (unc        507 B)  res/yn.png
+         405 B (unc        405 B)  res/9w.png
+         359 B (unc        596 B)  kotlin/internal/internal.kotlin_builtins
+         283 B (unc        625 B)  kotlin-tooling-metadata.json
+         235 B (unc        235 B)  assets/dexopt/baseline.prof
+         185 B (unc        344 B)  res/Zn.xml
+         118 B (unc        139 B)  kotlin/coroutines/coroutines.kotlin_builtins
+          72 B (unc         72 B)  assets/dexopt/baseline.profm
+          69 B (unc         82 B)  assets/flutter_assets/FontManifest.json
+          61 B (unc         67 B)  META-INF/androidx.arch.core_core-runtime.version
+          52 B (unc         56 B)  META-INF/com/android/build/gradle/app-metadata.properties
+          48 B (unc         46 B)  META-INF/version-control-info.textproto
+          47 B (unc         45 B)  assets/flutter_assets/NativeAssetsManifest.json
+           9 B (unc          7 B)  META-INF/androidx.core_core-ktx.version
+           9 B (unc          7 B)  META-INF/androidx.core_core.version
+           8 B (unc          6 B)  META-INF/androidx.activity_activity.version
+           8 B (unc          6 B)  META-INF/androidx.annotation_annotation-experimental.version

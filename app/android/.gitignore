@@ -1,0 +1,20 @@
+gradle-wrapper.jar
+/.gradle
+/captures/
+/gradlew
+/gradlew.bat
+/local.properties
+GeneratedPluginRegistrant.java
+.cxx/
+
+# Gradle 构建输出：中间产物多、体积大、每次构建都变。
+# Flutter 模板的 android/.gitignore 不含这一条（它只挡 app 级的 /build/），
+# 而本仓库的提交习惯是 `git add -A`，不挡就会被整目录带进历史。
+/build/
+/.kotlin/
+
+# Remember to never publicly share your keystore.
+# See https://flutter.dev/to/reference-keystore
+key.properties
+**/*.keystore
+**/*.jks

@@ -1,0 +1,34 @@
+name: simple_reader
+description: "Simple阅读 · 个人检索客户端（Flutter / Android）"
+publish_to: 'none'
+
+version: 1.9.7+34
+
+environment:
+  sdk: ^3.13.3
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 依赖策略：零第三方运行时依赖。
+#
+# 本应用只需要三样能力，全部由 Flutter / Dart SDK 原生提供：
+#   1. HTTP            -> dart:io 的 HttpClient（无需 dio）
+#   2. 状态共享        -> ChangeNotifier + InheritedNotifier（无需 provider）
+#   3. 本地键值持久化  -> 自建 MethodChannel + Android SDK 的
+#                         Context.getSharedPreferences（无需 shared_preferences）
+#   4. 图片加载与缓存  -> Image.network + 内置 ImageCache（无需
+#                         cached_network_image / flutter_cache_manager / sqflite）
+#
+# 这样做的直接收益：pub 求解空间从约 150 个包降到 0 个，冷缓存下也不会被
+# 网络与求解器拖住；同时彻底消除了 sqflite -> jni 这类深层依赖带来的
+# 版本冲突风险。
+# ─────────────────────────────────────────────────────────────────────────────
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

@@ -1,0 +1,201 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Android 云构建（GitHub Actions）
+#
+# 目的：把 release APK 的构建从本机搬到 GitHub 云端。
+#
+# 为什么要有它（2026-09-20 本机构建实测）：
+#   本机 C 盘余量常年 <1GB，而 Gradle/flutter 的临时目录默认落在 C 盘，
+#   构建会**静默死在字体裁剪之后**——没有 BUILD FAILED、没有 hs_err，
+#   Gradle daemon 日志也戛然而止（进程树被外部整体终止）。两次复现，
+#   只能靠把 TEMP/TMP 改到 D 盘 + 清干净 java 进程后重试才过。
+#   云端 runner 磁盘与内存独立，不受这些本机约束影响。
+#
+# 签名（关键）：release 用**永久发布密钥**签名
+#   见 app/android/app/build.gradle.kts 的 signingConfig = "release"，它由
+#   app/android/key.properties 指向 .workbuddy/keys/simple-reader-release.jks
+#   （本机），云端由下面的「还原永久发布密钥」步骤生成同样配置。
+#   证书 SHA-256 = 25:F9:A6:…:B0:25，有效期至 2055-10-12。该密钥与历史所有
+#   本机构建产物**同一身份**（就是把原来的 debug 密钥显式提升为发布密钥），
+#   因此老设备可以原地覆盖升级，不存在签名迁移。
+#
+#   ⚠️ 未配置 Secret ANDROID_KEYSTORE_BASE64 时**直接失败**，不再降级：降级会
+#   让 runner 用每次新生成的临时 debug 密钥签名，产物无法覆盖安装
+#   （INSTALL_FAILED_UPDATE_INCOMPATIBLE），卸载重装又会清空
+#   token/缓存/设置/已读线。宁可不出包，也不出错包。
+#
+#   添加方式：仓库 Settings → Secrets and variables → Actions →
+#   New repository secret，名字 ANDROID_KEYSTORE_BASE64，值 = 本机
+#   <仓库根>/.workbuddy/keys/simple-reader-keystore.base64.txt 的全部内容。
+#   可选 Secret（缺省依次为 android / androiddebugkey / android）：
+#   ANDROID_KEYSTORE_PASSWORD、ANDROID_KEY_ALIAS、ANDROID_KEY_PASSWORD。
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Android 云构建
+
+on:
+  push:
+    branches: [main]
+    # 纯文档/探查产物变更不触发构建，省额度也省等待
+    paths-ignore:
+      - '**/*.md'
+      - 'Simplexcel-API分析报告.html'
+      - 'analysis/**'
+  workflow_dispatch:
+    inputs:
+      build_apk:
+        description: '是否构建 APK（关闭则只跑 analyze + test）'
+        type: boolean
+        default: true
+
+# 同一分支只保留最新一次运行：连续推送不会堆积排队
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # 与本机 D:\dev\flutter 完全一致的版本（flutter.version.json 实测）
+  FLUTTER_VERSION: '3.47.4'
+  # 与 app/android/app/build.gradle.kts 的 flutter.* 默认值一致
+  # （packages/flutter_tools/gradle FlutterExtension.kt 实测）
+  ANDROID_COMPILE_SDK: '36'
+  ANDROID_BUILD_TOOLS: '36.1.0'
+  ANDROID_NDK: '28.2.13676358'
+  # flutter test 起本地 WebSocket，避免任何代理拦截 localhost（本机实测踩过）。
+  # ⚠️ 只写大写 NO_PROXY：GitHub 对 env 键做**大小写不敏感**的重复校验，
+  # 同时写 NO_PROXY 与 no_proxy 会让整个 workflow 被判 "Invalid workflow
+  # file: ...#L1 ('no_proxy' is already defined)" 而**一次都不执行**（实测）。
+  NO_PROXY: 'localhost,127.0.0.1,::1,0.0.0.0'
+
+jobs:
+  build:
+    name: analyze + test + release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: 取代码
+        uses: actions/checkout@v4
+
+      - name: 装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 装 Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # runner 自带 SDK 未必含 36/指定 build-tools/NDK，显式补齐
+      - name: 补齐 Android SDK 组件
+        run: |
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --install \
+            "platforms;android-${ANDROID_COMPILE_SDK}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK}" > /dev/null
+          echo "已安装：android-${ANDROID_COMPILE_SDK} / build-tools ${ANDROID_BUILD_TOOLS} / ndk ${ANDROID_NDK}"
+
+      # 还原**永久发布密钥**（== 本机那把，证书 SHA-256 25:F9:A6:…:B0:25）
+      - name: 还原永久发布密钥
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KS_KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # 归一化后的证书 SHA-256（去冒号、全大写），与任务末尾产物校验共用同一常量
+          EXP_SHA256: '25F9A6B696F861F7F8B73A3FE50856343BE7C14D812C6B8E37CE05FAC9A6B025'
+        run: |
+          # 本步骤刻意不用 pipefail：解析失败会得到空指纹，由下面的显式比对兜住，
+          # 这样比让 grep/head 的 SIGPIPE 退出码把脚本带崩更好排查。
+          set -eu
+          if [ -z "${KS_B64}" ]; then
+            echo "::error::未配置 Secret ANDROID_KEYSTORE_BASE64。release APK 必须用永久发布密钥（证书 SHA-256 ${EXP_SHA256}）签名，否则产物无法覆盖安装到已装机的设备。"
+            echo "::error::修复：仓库 Settings → Secrets and variables → Actions → New repository secret，名字 ANDROID_KEYSTORE_BASE64，值 = 本机 <仓库根>/.workbuddy/keys/simple-reader-keystore.base64.txt 的全部内容（单行 base64）。"
+            exit 1
+          fi
+          STORE_PASS="${KS_PASS:-android}"
+          ALIAS="${KS_ALIAS:-androiddebugkey}"
+          KEY_PASS="${KS_KEY_PASS:-android}"
+          KS_FILE="${HOME}/keys/simple-reader-release.jks"
+          mkdir -p "${HOME}/keys"
+          # tr 先剔除粘贴时可能带入的空格/制表/换行，避免 base64 解码失败
+          printf '%s' "${KS_B64}" | tr -d ' \t\r\n' | base64 -d > "${KS_FILE}"
+          chmod 600 "${KS_FILE}"
+          # key.properties 由 CI 生成（不入库）：storeFile 指向 runner 上的绝对路径
+          {
+            printf 'storeFile=%s\n'     "${KS_FILE}"
+            printf 'storePassword=%s\n' "${STORE_PASS}"
+            printf 'keyAlias=%s\n'      "${ALIAS}"
+            printf 'keyPassword=%s\n'   "${KEY_PASS}"
+          } > app/android/key.properties
+          echo "已写入 ${KS_FILE}（$(stat -c%s "${KS_FILE}") 字节）与 app/android/key.properties"
+          # -J-Duser.language=en 固定 keytool 输出语言，避免 runner 语言环境影响解析
+          KT_OUT="$(keytool -J-Duser.language=en -list -v -keystore "${KS_FILE}" \
+                      -storepass "${STORE_PASS}" -alias "${ALIAS}")"
+          FPR="$(printf '%s\n' "${KT_OUT}" | grep -m1 -i 'SHA256:' | sed 's/.*SHA256: *//' \
+                   | tr -d ':\r ' | tr 'a-f' 'A-F')"
+          echo "还原后密钥库证书 SHA-256：${FPR}"
+          if [ "${FPR}" != "${EXP_SHA256}" ]; then
+            echo "::error::Secret 里的密钥指纹不符！期望 ${EXP_SHA256}，实际 '${FPR}'。请用本机 <仓库根>/.workbuddy/keys/simple-reader-keystore.base64.txt 重新粘贴。"
+            exit 1
+          fi
+          echo "✅ 永久发布密钥还原成功，指纹与历史产物一致"
+
+      - name: 依赖解析
+        working-directory: app
+        run: flutter pub get
+
+      - name: 静态分析
+        working-directory: app
+        run: flutter analyze --no-pub
+
+      - name: 全量测试
+        working-directory: app
+        run: flutter test
+
+      # arm64 单 ABI 由 app/android/settings.gradle.kts 的 beforeProject 注入，
+      # 无需在此传 --target-platform（CLI 的 -P 压不过项目级 extra 属性）
+      - name: 构建 release APK
+        if: github.event_name == 'push' || github.event.inputs.build_apk == 'true'
+        working-directory: app
+        run: flutter build apk --release
+
+      # 产物溯源：大小 + sha256 + 签名证书指纹，并**硬断言**指纹 = 永久发布密钥
+      - name: 产物校验
+        if: github.event_name == 'push' || github.event.inputs.build_apk == 'true'
+        env:
+          EXP_SHA256: '25F9A6B696F861F7F8B73A3FE50856343BE7C14D812C6B8E37CE05FAC9A6B025'
+        run: |
+          set -eu
+          APK="$(ls app/build/app/outputs/flutter-apk/app-release.apk 2>/dev/null || ls dist/*.apk | head -1)"
+          echo "产物路径：${APK}"
+          ls -l "${APK}"
+          sha256sum "${APK}"
+          APKSIGNER="${ANDROID_HOME}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner"
+          SIG_OUT="$("${APKSIGNER}" verify --print-certs "${APK}")"
+          echo "${SIG_OUT}"
+          FPR="$(printf '%s\n' "${SIG_OUT}" | grep -m1 -i 'certificate SHA-256 digest' \
+                   | sed 's/.*digest: *//' | tr -d ':\r ' | tr 'a-f' 'A-F')"
+          echo "APK 签名证书 SHA-256：${FPR}"
+          if [ "${FPR}" != "${EXP_SHA256}" ]; then
+            echo "::error::APK 签名指纹与永久发布密钥不符（期望 ${EXP_SHA256}，实际 '${FPR}'）——此产物无法覆盖安装，已判为不合格。"
+            exit 1
+          fi
+          echo "✅ 签名身份校验通过：与历史所有产物同一密钥，可覆盖安装"
+
+      - name: 上传 APK 产物
+        if: github.event_name == 'push' || github.event.inputs.build_apk == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: simple-reader-apk-run${{ github.run_number }}
+          path: |
+            app/build/app/outputs/flutter-apk/app-release.apk
+            dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
