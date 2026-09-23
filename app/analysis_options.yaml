@@ -1,0 +1,15 @@
+# 本工程不引入 flutter_lints 包，避免为了一个 lint 集合再拉一棵依赖树。
+# 下面只保留对正确性有直接价值的规则。
+analyzer:
+  exclude:
+    - build/**
+    - android/**
+  errors:
+    # 未使用的 import / 局部变量当作警告暴露出来，避免无声堆积。
+    unused_import: warning
+    unused_local_variable: warning
+    dead_code: warning
+
+linter:
+  rules:
+    - avoid_print

@@ -1,0 +1,60 @@
+APK: C:\Users\Administrator\WorkBuddy\Worktrees\simplesousuo\main-0ded638c\app\build\app\outputs\flutter-apk\app-release.apk
+File size on disk: 17.37 MB
+Entries: 62, uncompressed total: 17.68 MB, compressed total (zip payload): 17.32 MB
+
+== Group summary (compressed / uncompressed) ==
+  lib/arm64-v8a (ABI)              16.95 MB /     16.95 MB
+  classes*.dex (code)             240.13 KB /    523.58 KB
+  assets/                         109.57 KB /    145.23 KB
+  other                            13.10 KB /     54.45 KB
+  resources.arsc                    6.76 KB /      6.76 KB
+  res/                              4.08 KB /      4.24 KB
+  AndroidManifest.xml               2.06 KB /      7.42 KB
+  META-INF/                           387 B /        337 B
+
+== ABI detail (compressed .so sizes) ==
+  [arm64-v8a]
+      libflutter.so                                11.20 MB
+      libapp.so                                     5.75 MB
+
+== Top 40 entries by compressed size ==
+      11.20 MB (unc     11.20 MB)  lib/arm64-v8a/libflutter.so
+       5.75 MB (unc      5.75 MB)  lib/arm64-v8a/libapp.so
+     240.13 KB (unc    523.58 KB)  classes.dex
+      93.95 KB (unc     95.78 KB)  assets/flutter_assets/NOTICES.Z
+       6.76 KB (unc      6.76 KB)  resources.arsc
+       6.63 KB (unc     10.47 KB)  assets/flutter_assets/fonts/MaterialIcons-Regular.otf
+       5.37 KB (unc     30.20 KB)  kotlin/kotlin.kotlin_builtins
+       5.15 KB (unc     21.34 KB)  assets/flutter_assets/shaders/ink_sparkle.frag
+       3.42 KB (unc     17.20 KB)  assets/flutter_assets/shaders/stretch_effect.frag
+       2.06 KB (unc      7.42 KB)  AndroidManifest.xml
+       1.85 KB (unc      8.42 KB)  kotlin/collections/collections.kotlin_builtins
+       1.41 KB (unc      4.75 KB)  kotlin/reflect/reflect.kotlin_builtins
+       1.37 KB (unc      1.37 KB)  res/o-.png
+       1.35 KB (unc      4.25 KB)  kotlin/ranges/ranges.kotlin_builtins
+       1.08 KB (unc      2.81 KB)  kotlin/concurrent/atomics/atomics.kotlin_builtins
+         994 B (unc        994 B)  res/RJ.png
+         782 B (unc      1.70 KB)  DebugProbesKt.bin
+         684 B (unc        684 B)  res/FS.png
+         542 B (unc       1022 B)  kotlin/annotation/annotation.kotlin_builtins
+         507 B (unc        507 B)  res/yn.png
+         405 B (unc        405 B)  res/9w.png
+         359 B (unc        596 B)  kotlin/internal/internal.kotlin_builtins
+         283 B (unc        625 B)  kotlin-tooling-metadata.json
+         236 B (unc        236 B)  assets/dexopt/baseline.prof
+         185 B (unc        344 B)  res/Zn.xml
+         118 B (unc        139 B)  kotlin/coroutines/coroutines.kotlin_builtins
+          74 B (unc         74 B)  assets/dexopt/baseline.profm
+          69 B (unc         82 B)  assets/flutter_assets/FontManifest.json
+          61 B (unc         67 B)  META-INF/androidx.arch.core_core-runtime.version
+          52 B (unc         56 B)  META-INF/com/android/build/gradle/app-metadata.properties
+          48 B (unc         46 B)  META-INF/version-control-info.textproto
+          47 B (unc         45 B)  assets/flutter_assets/NativeAssetsManifest.json
+           9 B (unc          7 B)  META-INF/androidx.core_core-ktx.version
+           9 B (unc          7 B)  META-INF/androidx.core_core.version
+           8 B (unc          6 B)  META-INF/androidx.activity_activity.version
+           8 B (unc          6 B)  META-INF/androidx.annotation_annotation-experimental.version
+           8 B (unc          6 B)  META-INF/androidx.customview_customview.version
+           8 B (unc          6 B)  META-INF/androidx.exifinterface_exifinterface.version
+           8 B (unc          6 B)  META-INF/androidx.fragment_fragment.version
+           8 B (unc          6 B)  META-INF/androidx.interpolator_interpolator.version
