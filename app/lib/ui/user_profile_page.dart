@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/api_exception.dart';
 import '../api/models.dart';
 import '../api/simple_api.dart';
+import '../data/user_remarks.dart';
 import '../state/app_scope.dart';
 import '../state/app_state.dart';
 import '../state/load_phase.dart';
@@ -16,6 +17,7 @@ import 'widgets/brightness_aware.dart';
 import 'widgets/paged_post_list.dart';
 import 'widgets/post_card.dart';
 import 'widgets/read_tracker.dart';
+import 'widgets/remark_name.dart';
 import 'widgets/state_views.dart';
 import 'widgets/user_avatar.dart';
 
@@ -209,6 +211,30 @@ class _UserProfilePageState extends State<UserProfilePage> {
       );
   }
 
+  // ---------------------------------------------------------------- 备注
+
+  /// 备注入口（2026-09-23 需求 3）：给 TA 起个本地叫法。
+  ///
+  /// 备注只存本机（[UserRemarksStore]），设好之后应用里所有显示昵称的地方
+  /// 都是「本名（备注名）」；导出备份的类别里也带它。
+  Future<void> _editRemark() async {
+    final nickname = _profile?.user.nickname ?? widget.nickname;
+    final current = UserRemarksStore.instance.remarkOf(widget.userId) ?? '';
+    final result = await showDialog<String>(
+      context: context,
+      builder: (_) => _RemarkDialog(nickname: nickname, current: current),
+    );
+    if (result == null || !mounted) return; // 取消：保持原样
+    await UserRemarksStore.instance.setRemark(
+      userId: widget.userId,
+      nickname: nickname,
+      remark: result,
+    );
+    if (!mounted) return;
+    setState(() {}); // 顶部标题/头部的展示名跟着变
+    _toast(result.trim().isEmpty ? '已清除备注' : '备注已保存');
+  }
+
   @override
   Widget build(BuildContext context) {
     // 包一层亮度依赖：本页配色全是静态语义色，不重建就会停在旧主题。
@@ -222,10 +248,32 @@ class _UserProfilePageState extends State<UserProfilePage> {
     return Scaffold(
       backgroundColor: AppTheme.pageBackground,
       appBar: AppBar(
-        title: Text(
-          name.isEmpty ? '个人主页' : name,
-          overflow: TextOverflow.ellipsis,
+        title: ListenableBuilder(
+          listenable: UserRemarksStore.instance,
+          builder: (context, _) => Text(
+            name.isEmpty
+                ? '个人主页'
+                : UserRemarksStore.instance.display(name, widget.userId),
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
+        actions: [
+          // 备注入口：只在**他人**主页出现（自己的主页没有备注的意义）。
+          // 已具备备注时图标点亮，一眼能看出这个人已经改过名字。
+          if (!_isSelf(app))
+            ListenableBuilder(
+              listenable: UserRemarksStore.instance,
+              builder: (context, _) {
+                final has = UserRemarksStore.instance.has(widget.userId);
+                return IconButton(
+                  tooltip: has ? '修改备注' : '备注',
+                  onPressed: _editRemark,
+                  color: has ? AppTheme.accent : null,
+                  icon: const Icon(Icons.edit_note_rounded, size: 22),
+                );
+              },
+            ),
+        ],
       ),
       body: SafeArea(
         top: false,
@@ -274,16 +322,25 @@ class _UserProfilePageState extends State<UserProfilePage> {
                     Row(
                       children: [
                         Flexible(
-                          child: Text(
-                            name.isEmpty ? '…' : name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 16.5,
-                              fontWeight: FontWeight.w700,
-                              color: AppTheme.inkPrimary,
-                            ),
-                          ),
+                          child: name.isEmpty
+                              ? Text(
+                                  '…',
+                                  style: TextStyle(
+                                    fontSize: 16.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppTheme.inkPrimary,
+                                  ),
+                                )
+                              : RemarkedText(
+                                  // 设过备注就显示「本名（备注名）」。
+                                  nickname: name,
+                                  userId: widget.userId,
+                                  style: TextStyle(
+                                    fontSize: 16.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppTheme.inkPrimary,
+                                  ),
+                                ),
                         ),
                         if (user?.isOfficial ?? false) ...[
                           const SizedBox(width: 5),
@@ -461,6 +518,12 @@ class _UserProfilePageState extends State<UserProfilePage> {
       controller: _posts,
       scrollController: _scroll,
       tracker: _tracker,
+      // 缓存状态条：顶部明确当前这屏动态是本地缓存还是刚抓的
+      //（与搜索页、收藏页同一口径同一组件）。个人主页同样会命中缓存
+      //（翻过的人主页再进来就是 preferCache 命中），此前这里没有任何提示。
+      header: _posts.fromCache && _posts.cachedAt != null
+          ? CacheHintBar(cachedAt: _posts.cachedAt!)
+          : null,
       itemBuilder: (context, post, index) => PostCard(
         post: post,
         isRead: _posts.isReadAt(index),
@@ -478,6 +541,104 @@ class _UserProfilePageState extends State<UserProfilePage> {
         // 他人主页里点合集标签 → 进入该合集（作者+合集双参数，同一链路）。
         onCollectionTap: () => openCollectionOfPost(context, post),
       ),
+    );
+  }
+}
+
+/// 「备注」对话框：设置 / 修改 / 清除某个用户的备注名。
+///
+/// 做成 StatefulWidget 是刻意的（与 `_JumpPageDialog` 同一理由）：
+/// TextEditingController 由它自己持有并在 `dispose()` 里释放 —— 对话框
+/// 确认/取消后还有一段退出动画，动画期间输入框仍挂载，若在外层 await
+/// 返回后立刻 dispose，InputDecorator 重建时会撞上 "used after being
+/// disposed"。
+///
+/// 返回值：新备注名（空串 = 清除）；返回 null = 取消（不改变现状）。
+class _RemarkDialog extends StatefulWidget {
+  const _RemarkDialog({required this.nickname, required this.current});
+
+  /// 对方当前的本名（用于对话框里的效果预览）。
+  final String nickname;
+
+  /// 已设备注名。空串 = 尚未设备注。
+  final String current;
+
+  @override
+  State<_RemarkDialog> createState() => _RemarkDialogState();
+}
+
+class _RemarkDialogState extends State<_RemarkDialog> {
+  late final TextEditingController _input =
+      TextEditingController(text: widget.current);
+
+  @override
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('备注', style: TextStyle(fontSize: 17)),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '给 TA 起个本地叫法：只存在这台手机上，不会同步给对方，'
+              '也不影响任何互动。设置后应用里都显示「本名（备注名）」，'
+              '导出备份时会一并带出。',
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.6,
+                color: AppTheme.inkTertiary,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _input,
+              autofocus: true,
+              maxLength: 20,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (v) => Navigator.of(context).pop(v),
+              decoration: const InputDecoration(
+                labelText: '备注名',
+                hintText: '例如：同事老王',
+              ),
+            ),
+            // 效果预览：边输边看到"全应用会显示成什么样"。
+            ListenableBuilder(
+              listenable: _input,
+              builder: (context, _) => Text(
+                '显示为：${UserRemark.compose(widget.nickname, _input.text)}',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: AppTheme.inkSecondary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        if (widget.current.isNotEmpty)
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(''),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.danger),
+            child: const Text('清除备注'),
+          ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_input.text),
+          child: const Text('保存'),
+        ),
+      ],
     );
   }
 }

@@ -6,6 +6,7 @@ import '../api/models.dart';
 import '../api/simple_api.dart';
 import '../data/settings.dart';
 import '../data/vote_overlay.dart';
+import '../data/vote_states.dart';
 import '../platform/native_bridge.dart';
 import '../state/app_scope.dart';
 import '../util/app_log.dart';
@@ -17,9 +18,20 @@ import 'token_setup_page.dart';
 /// 点赞 / 收藏 / 评论都是"先乐观更新、失败回滚"的模式，
 /// 抽到这里避免在多个页面重复。
 
-/// 点赞 / 取消点赞。
+/// 作者关闭评论（[Post.isCommentClosed]）时的统一提示语。
+///
+/// 卡片按钮栏下方那行小字、详情页评论输入框的占位文案、以及"绕过界面直接
+/// 提交"时的兜底提示共用同一份，避免三处措辞各写各的、日后改文案漏改。
+const String commentsClosedNotice = '作者已关闭互动';
+
+/// 点赞 / 取消点赞（**普通赞**，不带态度）。
 ///
 /// [post] 的 [Post.isVoted] 会被就地更新，返回是否操作成功。
+/// 要送出一个具体态度（长按点赞按钮）走 [sendVoteState]。
+///
+/// 取消会把态度一起取消（`DELETE` 删的是同一条记录）；普通点赞则**复位**
+/// 成默认态 —— 服务端取消是软删，不带参数直接再赞会把上一次的态度带回来，
+/// 所以点赞走 `POST v3/votes` 且不带 `vote_type`（详见 `SimpleApi.vote`）。
 Future<bool> toggleVote(BuildContext context, Post post) async {
   final app = AppScope.read(context);
   final token = app.token;
@@ -33,7 +45,11 @@ Future<bool> toggleVote(BuildContext context, Post post) async {
     await SimpleApi().vote(postId: post.id, on: target, token: token);
     // 记入本地点赞覆盖层：内容缓存里的 is_voted 还是旧值，
     // 缓存续读解析时要靠这层把点赞态补回来。
-    await VoteOverlay.instance.recordPost(post.id, voted: target);
+    // 取消传 null（记录删掉）、点赞传默认态（覆盖层要区分"有态度"）。
+    await VoteOverlay.instance.recordPost(
+      post.id,
+      voteType: target ? VoteStates.plain : null,
+    );
     log.i(LogTag.ui, '${target ? '点赞' : '取消点赞'}成功：${post.id}');
     return true;
   } on ApiException catch (e) {
@@ -49,6 +65,63 @@ Future<bool> toggleVote(BuildContext context, Post post) async {
   } catch (e, st) {
     post.isVoted = previous;
     log.exception(LogTag.ui, '点赞异常：${post.id}', e, st);
+    if (context.mounted) _toast(context, '操作失败：$e');
+    return false;
+  }
+}
+
+/// 给动态送出一个具体态度（长按点赞按钮选的那个）。
+///
+/// 与 [toggleVote] 的区别：这里**不做取反**，语义就是"送出这个态度"——
+/// 已赞的帖子再送一次 = 换个态度，没赞过的帖子送 = 带着态度赞一下
+/// （服务端两种都收，见报告写入矩阵第 6、9 步）。
+///
+/// 注意两件事：
+/// * 服务端**不认**白名单外的值（400 且不改动原状态），所以传进来的
+///   [voteType] 先过一遍 [VoteStates.byId]，表里没有的直接不发；
+/// * 读侧拿不到"我这条是什么态度"，本机的回显只认覆盖层里记下的这一个
+///   （别的设备 / 官方 App 改过就不知道了）。
+///
+/// 返回是否成功。[post] 的 [Post.isVoted] 会被就地更新（乐观、失败回滚）。
+Future<bool> sendVoteState(
+  BuildContext context,
+  Post post,
+  String voteType,
+) async {
+  final state = VoteStates.byId(voteType);
+  if (state == null) return false;
+
+  final app = AppScope.read(context);
+  final token = app.token;
+  if (token == null || token.isEmpty) return false;
+
+  final previousVoted = post.isVoted;
+  post.isVoted = true; // 乐观更新：送出态度必然是已赞态
+
+  try {
+    await SimpleApi()
+        .vote(postId: post.id, on: true, token: token, voteType: state.id);
+    await VoteOverlay.instance.recordPost(post.id, voteType: state.id);
+    log.i(LogTag.ui, '送出态度成功：${post.id}｜${state.id}');
+    // 送出成功**不弹提示**：结果就回显在按钮上（表情 + 短名），
+    // 弹一条 toast 反而打断浏览。失败照旧提示 —— 静默失败更糟。
+    return true;
+  } on ApiException catch (e) {
+    post.isVoted = previousVoted; // 回滚
+    log.w(LogTag.ui, '送出态度失败：${post.id}｜${state.id}｜${e.message}');
+    if (!context.mounted) return false;
+    if (e.requiresReauth) {
+      app.markUnauthorized(e.message);
+    } else if (e.statusCode == 400) {
+      // 白名单是服务端说了算：我们的表可能过期了（服务端删过值）。
+      _toast(context, '这个态度服务端不认了，先换一个吧');
+    } else {
+      _toast(context, e.message);
+    }
+    return false;
+  } catch (e, st) {
+    post.isVoted = previousVoted;
+    log.exception(LogTag.ui, '送出态度异常：${post.id}｜${state.id}', e, st);
     if (context.mounted) _toast(context, '操作失败：$e');
     return false;
   }

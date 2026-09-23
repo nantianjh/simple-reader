@@ -12,6 +12,7 @@ import 'data/local_store.dart';
 import 'data/reading_positions.dart';
 import 'data/search_history.dart';
 import 'data/settings.dart';
+import 'data/user_remarks.dart';
 import 'platform/native_bridge.dart';
 import 'state/app_scope.dart';
 import 'state/app_state.dart';
@@ -45,12 +46,14 @@ Future<void> main() async {
   await SearchHistory.instance.load();
   await ReadingPositionStore.instance.load();
   await FavouriteCollectionsStore.instance.load();
+  await UserRemarksStore.instance.load();
   log.i(
     LogTag.app,
     '本地数据就绪：保留期=${AppSettings.instance.retention.label}，'
     '搜索历史=${SearchHistory.instance.length} 条，'
     '续读点=${ReadingPositionStore.instance.count} 个，'
     '本机收藏合集=${FavouriteCollectionsStore.instance.length} 个，'
+    '用户备注=${UserRemarksStore.instance.length} 条，'
     '屏蔽词=${AppSettings.instance.blockedKeywords.length} 个，'
     '主题=${AppSettings.instance.themeMode.name}',
   );

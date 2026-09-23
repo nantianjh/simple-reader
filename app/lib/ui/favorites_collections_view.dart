@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../data/favourite_collections.dart';
 import '../data/settings.dart';
+import '../data/user_remarks.dart';
 import '../state/app_scope.dart';
 import '../state/collections_state.dart';
 import '../state/load_phase.dart';
@@ -958,17 +959,22 @@ class FavoritesCollectionsViewState extends State<FavoritesCollectionsView> {
                     c.authorName.isNotEmpty ||
                     c.postsCount >= 0) ...[
                   const SizedBox(height: 2),
-                  Text(
-                    [
-                      if (c.postsCount >= 0) '${c.postsCount} 条内容',
-                      if (c.authorName.isNotEmpty) '作者 ${c.authorName}',
-                      if (c.description.isNotEmpty) c.description,
-                    ].join(' · '),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      color: AppTheme.inkTertiary,
+                  ListenableBuilder(
+                    listenable: UserRemarksStore.instance,
+                    builder: (context, _) => Text(
+                      [
+                        if (c.postsCount >= 0) '${c.postsCount} 条内容',
+                        // 作者名同样套本地备注（合集记录里存着作者 id）。
+                        if (c.authorName.isNotEmpty)
+                          '作者 ${UserRemarksStore.instance.display(c.authorName, c.authorId)}',
+                        if (c.description.isNotEmpty) c.description,
+                      ].join(' · '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: AppTheme.inkTertiary,
+                      ),
                     ),
                   ),
                 ],

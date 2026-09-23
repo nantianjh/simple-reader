@@ -2,6 +2,7 @@ import 'dart:async';
 
 import '../data/content_cache.dart';
 import '../data/vote_overlay.dart';
+import '../data/vote_states.dart';
 import '../util/app_log.dart';
 import 'api_client.dart';
 import 'api_config.dart';
@@ -489,17 +490,47 @@ class SimpleApi {
     return SimpleUser.fromJson(map);
   }
 
-  /// 点赞 / 取消点赞。POST 点赞，DELETE 取消。
+  /// 点赞 / 取消点赞 / 带一个具体表态点赞。
+  ///
+  /// 契约来自《点赞状态承载能力-探查报告.md》第一节（逐步读回校验过的矩阵）：
+  ///
+  /// * **点赞走 v3**：`POST api/v3/votes {post_id[, vote_type]}` → 201。
+  ///   必须 v3 —— v2 会**静默忽略** `vote_type`（矩阵第 2 步），你以为送出了
+  ///   "安慰"，服务端记的还是普通赞。
+  /// * **不带 `vote_type` 的 v3 点赞 = 复位成普通赞**（第 5 步）。这一条很
+  ///   重要：服务端取消是"软删"（第 10 步），取消后再点赞会把上一次的状态
+  ///   带回来；只有 v3 不带参数才能真的回到普通赞。
+  /// * **取消仍走 v2**：`DELETE api/v2/votes {post_id}` → 201。实测 v3 建的
+  ///   状态用 v2 删得掉（报告第一节"兼容"条），没必要多一条 v3 路径。
+  /// * `vote_type` 是服务端白名单，非法值 400 且**不改动原状态**。所以
+  ///   [voteType] 只传 [VoteStates.all] 里的 id；[VoteStates.plain] 等同
+  ///   "不传"（那个字面值没实测过，别拿去当参数）。
   Future<void> vote({
     required String postId,
     required bool on,
     required String token,
+    String? voteType,
   }) async {
+    if (!on) {
+      await _client.sendJson(
+        'DELETE',
+        '${ApiConfig.apiV2}votes',
+        token: token,
+        body: {'post_id': postId},
+      );
+      return;
+    }
+
+    final state =
+        (voteType == null || voteType == VoteStates.plain) ? null : voteType;
     await _client.sendJson(
-      on ? 'POST' : 'DELETE',
-      '${ApiConfig.apiV2}votes',
+      'POST',
+      '${ApiConfig.apiV3}votes',
       token: token,
-      body: {'post_id': postId},
+      body: {
+        'post_id': postId,
+        if (state != null) 'vote_type': state,
+      },
     );
   }
 

@@ -525,6 +525,15 @@ class Post {
   /// 是否处于审核中。
   bool get isPending => isReviewing;
 
+  /// 作者是否关闭了这条动态的评论（服务端 `comment_permission == 'no_comments'`）。
+  ///
+  /// 只认这一档：它不是"看人下菜"的状态，作者一关谁都不能评，所以凭列表端点
+  /// 下发的枚举就能下结论（列表端点**没有** `can_comment`，见
+  /// 《动态评论权限状态-探查报告.md》第二节）。另一档
+  /// `followings_comments`（仅我关注的人可评）行不行取决于我有没有关注作者，
+  /// 光看枚举判断不了，因此一律按可评论处理、不做任何限制。
+  bool get isCommentClosed => commentPermission == 'no_comments';
+
   factory Post.fromJson(Map<String, dynamic> j) {
     final mediaRaw = j['media'];
     final media = <MediaItem>[];

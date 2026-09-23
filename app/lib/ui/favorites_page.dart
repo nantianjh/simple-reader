@@ -307,7 +307,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       scrollController: _scroll,
       tracker: _tracker,
       header: _favorites.fromCache && _favorites.cachedAt != null
-          ? _cacheHint()
+          ? CacheHintBar(cachedAt: _favorites.cachedAt!)
           : null,
       itemBuilder: (context, post, index) => PostCard(
         post: post,
@@ -334,29 +334,4 @@ class _FavoritesPageState extends State<FavoritesPage>
     );
   }
 
-  /// 数据来自本地缓存时的提示条。
-  Widget _cacheHint() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(14, 7, 14, 7),
-      color: AppTheme.infoBackground,
-      child: Row(
-        children: [
-          Icon(Icons.offline_bolt_outlined,
-              size: 13, color: AppTheme.accent),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              '内容来自本地缓存（抓取于 ${timeAgo(_favorites.cachedAt!)}）',
-              style: TextStyle(fontSize: 11.5, color: AppTheme.accent),
-            ),
-          ),
-          Text(
-            '下拉可刷新',
-            style: TextStyle(fontSize: 11, color: AppTheme.inkTertiary),
-          ),
-        ],
-      ),
-    );
-  }
 }

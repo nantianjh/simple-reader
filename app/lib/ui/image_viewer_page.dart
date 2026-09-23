@@ -224,7 +224,9 @@ class _ZoomableImageState extends State<_ZoomableImage>
   /// 当前的放大**只**来自长图自动缩放（用户还没有双指捏过）。
   ///
   /// 用它把"打开时长图铺满宽度"与"用户自己放大"区分开：前者不锁翻页
-  /// （长图也要能左右滑到下一张），且横向不允许拖（那一档正好铺满宽度）。
+  /// （长图也要能左右滑到下一张）。横向拖不动的约束不再靠本字段的特例 ——
+  /// 铺满宽度那一档在 [_clampTranslation] 里横向允许区间退化为单点，天然
+  /// 拖不动；本字段只剩"是否锁翻页"一个职责。
   bool _autoScaleOnly = false;
 
   @override
@@ -347,7 +349,22 @@ class _ZoomableImageState extends State<_ZoomableImage>
       if (!mounted) return;
       if (_transform.value.getMaxScaleOnAxis() > _zoomThreshold) return;
       _autoScaleOnly = true;
+      // Transform 默认以视口左上角为缩放锚点（origin/alignment 均空），纯缩放
+      // 会把居中放置的长图整体甩到视口右侧 —— 图左缘落在 V(s−1)/2 处，表现成
+      // "长图点开后画面偏右、左侧一片黑"。因此必须带上配套平移：tx 把图左缘
+      // 拉回 0（横向铺满），ty 顶对齐（长图从顶部开始读）。横向的期望值取
+      // "图左缘对齐 0"这一档交给 [_clampAxis] 校正；被 ceiling 压住盖不满
+      // 宽度的极长图会由它自动改为居中。
+      final strip = _stripRect;
+      final tx = strip == null
+          ? 0.0
+          : _clampAxis(-target * strip.left, target, strip.left, strip.width,
+              _viewport.width);
+      final ty = strip == null
+          ? 0.0
+          : _clampAxis(0.0, target, strip.top, strip.height, _viewport.height);
       _transform.value = Matrix4.identity()
+        ..translateByDouble(tx, ty, 0, 1)
         ..scaleByDouble(target, target, target, 1);
     });
   }
@@ -409,23 +426,79 @@ class _ZoomableImageState extends State<_ZoomableImage>
     }
   }
 
-  /// 平移边界钳制：scale ≥ 1 时图片必须始终盖住视口。
-  /// 缩放量为 1 时任何平移都被钳回零点（捏合"原地不动"）。
+  /// contain 渲染条在**未变换**时的矩形（视口坐标系）。
+  ///
+  /// `SizedBox.expand > Center > NetImage(fit: contain)` 的实际绘制矩形：
+  /// 图片按 contain 缩放后在视口内水平、垂直都居中。初始平移与边界钳制都
+  /// 必须以这个矩形为基准 —— 之前两处逻辑都假设"图左缘/顶缘在 0"，与居中
+  /// 摆放的事实不符，正是长图自动缩放整体右移出屏、普通竖图放大后拖到边缘
+  /// 露出上下黑边的共同根源。尺寸未知（未解码且服务端无尺寸）时返回 null。
+  Rect? get _stripRect {
+    final intrinsic = _intrinsicSize ?? _metaSize();
+    if (intrinsic == null || _viewport.isEmpty) return null;
+    final fit = math.min(
+      _viewport.width / intrinsic.width,
+      _viewport.height / intrinsic.height,
+    );
+    final w = intrinsic.width * fit;
+    final h = intrinsic.height * fit;
+    return Rect.fromLTWH(
+      (_viewport.width - w) / 2,
+      (_viewport.height - h) / 2,
+      w,
+      h,
+    );
+  }
+
+  /// 平移边界钳制：scale ≥ 1 时变换后的渲染条必须始终盖住视口（盖不住的轴
+  /// 回中），保证图片既不会被拖出视口、也不会露出黑边。缩放量为 1 时任何
+  /// 平移都被钳回零点（捏合"原地不动"）。
+  ///
+  /// 之前版本假设"渲染条左缘/顶缘在 0"，且给长图自动缩放单开了一档把横向
+  /// 平移钉死为 0 的特例（与居中摆放的事实不符：错位发生后用户怎么拖都回
+  /// 不来）。现统一按 [_stripRect] 的真实矩形推导：长图恰好铺满宽度时横向
+  /// 允许区间退化为单点，"横向钉死"由退化区间自然保证，特例随之删除。
   Offset _clampTranslation(Offset t, double scale) {
     if (scale <= 1.0 || _viewport.isEmpty) return Offset.zero;
-    // 长图自动缩放这一档：图片恰好在水平方向铺满视口，横向不该能拖 ——
-    // 否则一拖就把图拉出屏幕、露出黑边（正好把"自适应铺满"的效果毁掉）。
-    // 纵向仍按视口范围钳制（长图靠纵向平移浏览）。
-    if (_autoScaleOnly) {
-      final maxYOnly = _viewport.height * (scale - 1);
-      return Offset(0, t.dy.clamp(-maxYOnly, 0.0).toDouble());
+    final strip = _stripRect;
+    if (strip == null) {
+      // 几何未知（尚未解码、服务端也无尺寸）：沿用"顶格"假设兜底，
+      // 与旧行为一致。
+      final maxX = _viewport.width * (scale - 1);
+      final maxY = _viewport.height * (scale - 1);
+      return Offset(
+        t.dx.clamp(-maxX, 0.0).toDouble(),
+        t.dy.clamp(-maxY, 0.0).toDouble(),
+      );
     }
-    final maxX = _viewport.width * (scale - 1);
-    final maxY = _viewport.height * (scale - 1);
     return Offset(
-      t.dx.clamp(-maxX, 0.0).toDouble(),
-      t.dy.clamp(-maxY, 0.0).toDouble(),
+      _clampAxis(t.dx, scale, strip.left, strip.width, _viewport.width),
+      _clampAxis(t.dy, scale, strip.top, strip.height, _viewport.height),
     );
+  }
+
+  /// 单轴钳制：变换 `T(tx)·S(scale)` 作用于渲染条 [stripPos, stripPos+extent]
+  /// 时，要求变换后的条完整盖住视口轴 [0, size]：
+  ///
+  /// * 条左缘 ≤ 0    → tx ≤ −scale·stripPos
+  /// * 条右缘 ≥ size → tx ≥ size − scale·(stripPos+extent)
+  ///
+  /// 条比视口短（盖不住）时上下界倒挂，改为回中（条中心对齐视口中心）；
+  /// 区间窄于半个像素（如长图恰好铺满宽度）时取中点，避免浮点抖动。
+  double _clampAxis(
+    double tx,
+    double scale,
+    double stripPos,
+    double extent,
+    double size,
+  ) {
+    final lo = size - scale * (stripPos + extent);
+    final hi = -scale * stripPos;
+    if (lo > hi) {
+      return size / 2 - scale * (stripPos + extent / 2);
+    }
+    if (hi - lo < 0.5) return (lo + hi) / 2;
+    return tx.clamp(lo, hi).toDouble();
   }
 
   @override

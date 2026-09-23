@@ -13,6 +13,7 @@ import 'widgets/brightness_aware.dart';
 import 'widgets/paged_post_list.dart';
 import 'widgets/post_card.dart';
 import 'widgets/read_tracker.dart';
+import 'widgets/remark_name.dart';
 import 'widgets/state_views.dart';
 
 /// 从一条动态的「所属合集」标签进入合集详情页的统一入口。
@@ -208,6 +209,9 @@ class _CollectionDetailPageState extends State<CollectionDetailPage> {
     final count = c.postsCount >= 0 ? '${c.postsCount} 条内容' : '合集内容';
     final author =
         c.creator.nickname.isNotEmpty ? c.creator.nickname : widget.authorName;
+    // 作者 id：优先取头部接口给的 creator.id，没有就退回"收录它那条动态的作者"。
+    final authorId =
+        c.creator.id.isNotEmpty ? c.creator.id : widget.authorId;
 
     return Container(
       width: double.infinity,
@@ -263,10 +267,10 @@ class _CollectionDetailPageState extends State<CollectionDetailPage> {
                     size: 13, color: AppTheme.inkTertiary),
                 const SizedBox(width: 4),
                 Flexible(
-                  child: Text(
-                    author,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                  // 合集作者名也套本地备注（作者 id 拿得到就一定对上）。
+                  child: RemarkedText(
+                    nickname: author,
+                    userId: authorId,
                     style: TextStyle(
                       fontSize: 12.5,
                       color: AppTheme.inkTertiary,

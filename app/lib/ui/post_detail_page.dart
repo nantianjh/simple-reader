@@ -6,6 +6,9 @@ import '../api/api_config.dart';
 import '../api/api_exception.dart';
 import '../api/models.dart';
 import '../api/simple_api.dart';
+import '../data/user_remarks.dart';
+import '../data/vote_overlay.dart';
+import '../data/vote_states.dart';
 import '../state/app_scope.dart';
 import '../util/format.dart';
 import 'actions.dart';
@@ -18,8 +21,10 @@ import 'widgets/link_chip.dart';
 import 'widgets/linkified_text.dart';
 import 'widgets/media_grid.dart';
 import 'widgets/pending_emoji_strip.dart';
+import 'widgets/remark_name.dart';
 import 'widgets/state_views.dart';
 import 'widgets/user_avatar.dart';
+import 'widgets/vote_state_bar.dart';
 
 /// 内容详情页：完整正文 + 媒体 + 评论区。
 class PostDetailPage extends StatefulWidget {
@@ -55,6 +60,12 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   /// 表情面板展开态。输入框获得焦点时自动收起（与键盘互斥）。
   bool _emojiPanelOpen = false;
+
+  /// 表态条展开态（长按点赞按钮开关）。
+  ///
+  /// 与卡片里的表态条同一个组件、同一套做法：在位展开一条，不用弹层
+  /// （见 `widgets/vote_state_bar.dart`）。
+  bool _voteBarOpen = false;
 
   /// 已展开到全量的回复（key = 主评论 id）。
   /// preview_replies 通常只有 3 条，点「查看全部回复」后从
@@ -131,6 +142,13 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Future<void> _sendComment() async {
+    // 作者关闭评论的动态（[Post.isCommentClosed]）不发请求：输入框已禁用，
+    // 这里挡的是"界面状态过期"——数据可能是旧缓存，权限是作者后来才关的，
+    // 直发就会换来一个语义性 500（见《动态评论权限状态-探查报告.md》第三节）。
+    if (widget.post.isCommentClosed) {
+      _toastNotice();
+      return;
+    }
     final text = _commentInput.text.trim();
     final emojis = List<Emoji>.of(_pendingEmojis);
     if (text.isEmpty && emojis.isEmpty) return;
@@ -194,6 +212,14 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   // ---------------------------------------------------------- 评论互动
 
+  /// 提示一句「作者已关闭互动」。评论入口在关闭评论的动态上是禁用的，
+  /// 这个提示只服务于"绕过禁用界面"的旁路（键盘提交 / 无障碍 / 旧缓存数据）。
+  void _toastNotice() {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(commentsClosedNotice)));
+  }
+
   /// 挑选 / 取消一个待发表情。
   void _togglePendingEmoji(Emoji emoji) {
     setState(() {
@@ -207,7 +233,14 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   /// 把某条评论设为回复目标（主评论与回复楼层通用）。
+  ///
+  /// 作者关闭评论时评论行的回复入口也一并不响应（输入框本来就是禁用的，
+  /// 放行只会把焦点送进一个不能打字的框里）。
   void _startReply(Comment c) {
+    if (widget.post.isCommentClosed) {
+      _toastNotice();
+      return;
+    }
     setState(() {
       _replyTarget = c;
       _emojiPanelOpen = false;
@@ -332,10 +365,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
                     Row(
                       children: [
                         Flexible(
-                          child: Text(
-                            post.user.nickname,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                          // 作者昵称同样套用本地备注（「本名（备注名）」）。
+                          child: RemarkedText(
+                            nickname: post.user.nickname,
+                            userId: post.user.id,
                             style: TextStyle(
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
@@ -438,15 +471,21 @@ class _PostDetailPageState extends State<PostDetailPage> {
                 icon: post.isVoted
                     ? Icons.favorite_rounded
                     : Icons.favorite_border_rounded,
-                label: post.votesCount == null
-                    ? (post.isVoted ? '已赞' : '点赞')
-                    : '${compactCount(post.votesCount!)} 赞',
+                // 送过态度就以那个态度的表情 + 短名回显（与卡片按钮同一口径）。
+                emoji: _voteState?.emoji,
+                label: _voteState?.short ??
+                    (post.votesCount == null
+                        ? (post.isVoted ? '已赞' : '点赞')
+                        : '${compactCount(post.votesCount!)} 赞'),
                 active: post.isVoted,
                 activeColor: AppTheme.likeColor,
                 onTap: () async {
                   final ok = await toggleVote(context, post);
                   if (ok && mounted) setState(() {});
                 },
+                // 长按在位展开表态条：选中才送出，长按本身不动点赞态。
+                onLongPress: () =>
+                    setState(() => _voteBarOpen = !_voteBarOpen),
               ),
               const SizedBox(width: 8),
               _actionChip(
@@ -463,22 +502,53 @@ class _PostDetailPageState extends State<PostDetailPage> {
               ),
             ],
           ),
+          // 表态条：就在操作行下方摊开（与卡片里同一个组件、同一套做法）。
+          if (_voteBarOpen) ...[
+            const SizedBox(height: 8),
+            VoteStateBar(
+              current: VoteOverlay.instance.postVoteType(widget.post.id),
+              onPick: _sendVoteState,
+            ),
+          ],
         ],
       ),
     );
   }
 
+  /// 我这条动态送出的态度（普通赞 / 没送过为 null）。
+  ///
+  /// 读的是本机覆盖层：服务端只把 `is_voted` 布尔放进动态对象，
+  /// "我这条是什么状态"读不回来（详见 `data/vote_states.dart`）。
+  VoteState? get _voteState =>
+      VoteStates.byId(VoteOverlay.instance.postVoteType(widget.post.id));
+
+  /// 选中一个表态：先收起条，再送出。
+  ///
+  /// 与卡片里的同名校验口径一致：成功不弹提示，按钮上的回显就是反馈
+  /// （见 [sendVoteState]）。
+  Future<void> _sendVoteState(String voteType) async {
+    if (_voteBarOpen) setState(() => _voteBarOpen = false);
+    final ok = await sendVoteState(context, widget.post, voteType);
+    if (ok && mounted) setState(() {});
+  }
+
+  /// 正文下方的一个操作按钮。
+  ///
+  /// [emoji] 传了就替掉图标 —— 点赞按钮用它回显"我送出的态度"。
   Widget _actionChip({
     required IconData icon,
     required String label,
     required bool active,
     Color? activeColor,
+    String? emoji,
     required VoidCallback onTap,
+    VoidCallback? onLongPress,
   }) {
     final ac = activeColor ?? AppTheme.accent;
     final color = active ? ac : AppTheme.inkSecondary;
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(8),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -491,7 +561,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 16, color: color),
+            if (emoji != null)
+              Text(emoji, style: const TextStyle(fontSize: 15, height: 1.1))
+            else
+              Icon(icon, size: 16, color: color),
             const SizedBox(width: 5),
             Text(
               label,
@@ -695,10 +768,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
               Row(
                 children: [
                   Flexible(
-                    child: Text(
-                      c.user.nickname,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    // 评论者昵称同样套用本地备注。
+                    child: RemarkedText(
+                      nickname: c.user.nickname,
+                      userId: c.user.id,
                       style: TextStyle(
                         fontSize: compact ? 12.5 : 13,
                         fontWeight: FontWeight.w600,
@@ -731,8 +804,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
                   (parent == null || c.repliedUser!.id != parent.user.id))
                 Padding(
                   padding: const EdgeInsets.only(bottom: 2),
-                  child: Text(
-                    '回复 @${c.repliedUser!.nickname}',
+                  child: RemarkedText(
+                    nickname: c.repliedUser!.nickname,
+                    userId: c.repliedUser!.id,
+                    prefix: '回复 @',
                     style: TextStyle(
                       fontSize: 12,
                       color: AppTheme.accent,
@@ -850,6 +925,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Widget _commentBar() {
+    // 作者关闭评论（[Post.isCommentClosed]）：输入框改为不可输入、占位文案
+    // 换成「作者已关闭互动」，表情与发送一并禁用 —— 整条评论栏只剩"看"。
+    // 已发出的评论照常展示，只是不再能回。
+    final closed = widget.post.isCommentClosed;
     return Container(
       decoration: BoxDecoration(
         color: AppTheme.cardBackground,
@@ -913,6 +992,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
                   child: TextField(
                     controller: _commentInput,
                     focusNode: _commentFocus,
+                    // 作者关闭评论时整框不可输入，占位文案就是那句说明。
+                    enabled: !closed,
                     // 多行自适应：1~6 行，换行自动长高，超过后框内滚动。
                     keyboardType: TextInputType.multiline,
                     textInputAction: TextInputAction.newline,
@@ -920,9 +1001,14 @@ class _PostDetailPageState extends State<PostDetailPage> {
                     maxLines: 6,
                     style: const TextStyle(fontSize: 14),
                     decoration: InputDecoration(
-                      hintText: _replyTarget == null
-                          ? '说点什么…'
-                          : '回复 @${_replyTarget!.user.nickname}…',
+                      hintText: closed
+                          ? commentsClosedNotice
+                          : (_replyTarget == null
+                              ? '说点什么…'
+                              : '回复 @${UserRemarksStore.instance.display(
+                                  _replyTarget!.user.nickname,
+                                  _replyTarget!.user.id,
+                                )}…'),
                       contentPadding: const EdgeInsets.symmetric(
                           horizontal: 12, vertical: 11),
                     ),
@@ -930,23 +1016,28 @@ class _PostDetailPageState extends State<PostDetailPage> {
                 ),
                 // 表情入口在输入框右侧、发送键左边。
                 IconButton(
-                  onPressed: () =>
-                      setState(() => _emojiPanelOpen = !_emojiPanelOpen),
+                  onPressed: closed
+                      ? null
+                      : () =>
+                          setState(() => _emojiPanelOpen = !_emojiPanelOpen),
                   icon: Icon(
                     _emojiPanelOpen
                         ? Icons.emoji_emotions_rounded
                         : Icons.emoji_emotions_outlined,
                     size: 23,
                   ),
-                  color:
-                      _emojiPanelOpen ? AppTheme.accent : AppTheme.inkTertiary,
+                  color: closed
+                      ? AppTheme.inkDisabled
+                      : (_emojiPanelOpen
+                          ? AppTheme.accent
+                          : AppTheme.inkTertiary),
                   tooltip: '表情',
                   visualDensity: VisualDensity.compact,
                 ),
                 Padding(
                   padding: const EdgeInsets.only(left: 2, bottom: 1),
                   child: FilledButton(
-                    onPressed: _sending ? null : _sendComment,
+                    onPressed: (closed || _sending) ? null : _sendComment,
                     style: FilledButton.styleFrom(
                       minimumSize: const Size(0, 42),
                       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -984,10 +1075,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
       child: Row(
         children: [
           Expanded(
-            child: Text(
-              '回复 @${t.user.nickname}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            child: RemarkedText(
+              nickname: t.user.nickname,
+              userId: t.user.id,
+              prefix: '回复 @',
               style: TextStyle(
                 fontSize: 12.5,
                 color: AppTheme.inkSecondary,
