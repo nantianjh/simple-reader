@@ -10,6 +10,7 @@ import 'local_store.dart';
 import 'reading_positions.dart';
 import 'search_history.dart';
 import 'settings.dart';
+import 'user_remarks.dart';
 import 'vote_overlay.dart';
 
 /// 一条内容缓存（备份里的最小单元）。
@@ -45,6 +46,7 @@ class BackupPayload {
     required this.readPositions,
     required this.favouriteCollections,
     required this.voteOverlay,
+    required this.userRemarks,
     required this.contentCache,
   });
 
@@ -56,7 +58,7 @@ class BackupPayload {
   /// 文件里**真实出现过**的 data 字段名（取自 `data` 的键）。
   ///
   /// 有了它才分得清"这一类数据是空"与"这一类数据文件里根本没有"：
-  /// 完整备份（导出的文件）六个字段都在 → 覆盖式还原；
+  /// 完整备份（导出的文件）七个字段都在 → 覆盖式还原；
   /// 手写的局部文件（例如只想导入搜索词的范本）只带一个字段 →
   /// 其余类别一律不碰本机数据。判据是**字段是否存在**，不是值是否为空。
   final Set<String> provided;
@@ -66,6 +68,10 @@ class BackupPayload {
   final Map<String, dynamic> readPositions;
   final Map<String, dynamic> favouriteCollections;
   final Map<String, dynamic> voteOverlay;
+
+  /// 用户备注（userId → { nickname, remark, updatedAt }）。
+  final Map<String, dynamic> userRemarks;
+
   final List<BackupCacheEntry> contentCache;
 
   /// 文件是否覆盖全部数据类别（即"整机快照"，导出的文件都是这种）。
@@ -75,6 +81,12 @@ class BackupPayload {
   /// 本次备份包含的合集条数（供确认弹窗展示）。
   int get collectionCount {
     final items = favouriteCollections['items'];
+    return items is Map ? items.length : 0;
+  }
+
+  /// 本次备份包含的用户备注条数（供确认弹窗展示）。
+  int get remarkCount {
+    final items = userRemarks['items'];
     return items is Map ? items.length : 0;
   }
 
@@ -96,12 +108,16 @@ class BackupImportSummary {
     required this.collections,
     required this.historyItems,
     required this.readPositions,
+    required this.remarks,
   });
 
   final int cacheEntries;
   final int collections;
   final int historyItems;
   final int readPositions;
+
+  /// 恢复的用户备注条数。
+  final int remarks;
 }
 
 /// 本机数据的备份与恢复。
@@ -127,7 +143,8 @@ class BackupImportSummary {
 ///     "searchHistory": [ "关键词" ],
 ///     "readPositions": { "<scope>": { ... } },
 ///     "favouriteCollections": { "items": { ... }, "removed": [ ... ] },
-///     "voteOverlay": { "posts": { }, "comments": { } },
+///     "voteOverlay": { "posts": { "<postId>": "comfort" }, "comments": { "<commentId>": true } },
+///     "userRemarks": { "items": { "<userId>": { "nickname": "本名", "remark": "备注名", "updatedAt": 0 } } },
 ///     "contentCache": [ { "sig": "...", "savedAt": 0, "rows": [ ... ] } ]
 ///   }
 /// }
@@ -136,8 +153,12 @@ class BackupImportSummary {
 /// **不含访问凭证**：token 是本机私有凭证，不写进任何可导出文件（与本工程
 /// 「凭证不外传」的约定一致）；换端后重新登录即可。
 ///
+/// `voteOverlay.posts` 的值是**表态 id**（`"unknown"` = 普通赞；可送出的那
+/// 几种见 `vote_states.dart`），评论侧仍是 bool。1.9.6 及以前动态侧存的是
+/// `true`/`false`，旧备份/旧落盘数据照样读得进来（见 `VoteOverlay`）。
+///
 /// **局部导入（2026-09-22）**：判据是 `data` 里**字段存不存在**，不是值空不空 ——
-/// 导出的备份六个字段齐全 ⇒ 语义仍是"整机快照覆盖"；手写的局部文件（例如
+/// 导出的备份七个字段齐全 ⇒ 语义仍是"整机快照覆盖"；手写的局部文件（例如
 /// 只带 `searchHistory` 的搜索词范本）⇒ 只写它带的类别，其余类别不动本机数据。
 /// 这样"只想批量导入一批搜索词"就不必先把设置、合集、续读点一起端上来。
 class BackupService {
@@ -153,6 +174,7 @@ class BackupService {
     'readPositions': '阅读存档（续读点）',
     'favouriteCollections': '收藏的合集',
     'voteOverlay': '点赞记录',
+    'userRemarks': '用户备注',
     'contentCache': '已缓存内容',
   };
 
@@ -228,6 +250,7 @@ class BackupService {
         'readPositions': store.readMap(LocalStore.keyReadPositions),
         'favouriteCollections': store.readMap(LocalStore.keyFavCollections),
         'voteOverlay': vote,
+        'userRemarks': store.readMap(LocalStore.keyUserRemarks),
         'contentCache': cache,
       },
     };
@@ -238,6 +261,7 @@ class BackupService {
       '备份已组装：缓存 ${cache.length} 条（跳过 $skipped）、'
       '合集 ${_countCollections(store.readMap(LocalStore.keyFavCollections))} 个、'
       '历史 ${store.readList(LocalStore.keySearchHistory).length} 条、'
+      '备注 ${UserRemarksStore.instance.length} 条、'
       '${text.length} B',
     );
     return text;
@@ -297,6 +321,7 @@ class BackupService {
         readPositions: _mapOf(d['readPositions']),
         favouriteCollections: _mapOf(d['favouriteCollections']),
         voteOverlay: _mapOf(d['voteOverlay']),
+        userRemarks: _mapOf(d['userRemarks']),
         contentCache: cache,
       );
     } catch (e) {
@@ -335,6 +360,12 @@ class BackupService {
       await bridge.kvSet(VoteOverlay.kvKey, jsonEncode(p.voteOverlay));
     }
 
+    // 用户备注：与其余类别同一口径 —— 文件带了这个类别就整体替换
+    //（空对象即"本机没有备注"，照旧覆盖）。
+    if (has('userRemarks')) {
+      await UserRemarksStore.instance.replaceAll(p.userRemarks);
+    }
+
     var cacheWritten = 0;
     if (has('contentCache')) {
       for (final e in p.contentCache) {
@@ -366,13 +397,15 @@ class BackupService {
       LogTag.cache,
       '备份已导入：类别 ${p.provided.isEmpty ? '（无）' : p.includedLabels.join('、')}；'
       '缓存 $cacheWritten 条、合集 ${p.collectionCount} 个、'
-      '历史 ${p.historyCount} 条、续读点 ${p.readPositionCount} 个',
+      '历史 ${p.historyCount} 条、续读点 ${p.readPositionCount} 个、'
+      '备注 ${p.remarkCount} 条',
     );
     return BackupImportSummary(
       cacheEntries: cacheWritten,
       collections: p.collectionCount,
       historyItems: p.historyCount,
       readPositions: p.readPositionCount,
+      remarks: p.remarkCount,
     );
   }
 

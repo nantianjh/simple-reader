@@ -1,0 +1,283 @@
+diff --git a/app/lib/api/models.dart b/app/lib/api/models.dart
+index 69445a7..94896cd 100644
+--- a/app/lib/api/models.dart
++++ b/app/lib/api/models.dart
+@@ -525,6 +525,15 @@ class Post {
+   /// 是否处于审核中。
+   bool get isPending => isReviewing;
+ 
++  /// 作者是否关闭了这条动态的评论（服务端 `comment_permission == 'no_comments'`）。
++  ///
++  /// 只认这一档：它不是"看人下菜"的状态，作者一关谁都不能评，所以凭列表端点
++  /// 下发的枚举就能下结论（列表端点**没有** `can_comment`，见
++  /// 《动态评论权限状态-探查报告.md》第二节）。另一档
++  /// `followings_comments`（仅我关注的人可评）行不行取决于我有没有关注作者，
++  /// 光看枚举判断不了，因此一律按可评论处理、不做任何限制。
++  bool get isCommentClosed => commentPermission == 'no_comments';
++
+   factory Post.fromJson(Map<String, dynamic> j) {
+     final mediaRaw = j['media'];
+     final media = <MediaItem>[];
+diff --git a/app/lib/data/changelog.dart b/app/lib/data/changelog.dart
+index 4e081b9..8079ae4 100644
+--- a/app/lib/data/changelog.dart
++++ b/app/lib/data/changelog.dart
+@@ -55,6 +55,8 @@ class Changelog {
+         '卡片底部按钮顺序调整：评论在前、点赞在后。',
+         '他人主页新增「关注 / 已关注」按钮。',
+         '收藏的动态里取消收藏（尤其是展开过长文之后）不再让画面跳走。',
++        '作者关闭了评论的动态：评论按钮置灰并提示「作者已关闭互动」，'
++            '进详情页评论框同样不能输入。',
+       ],
+     ),
+     ReleaseNote(
+diff --git a/app/lib/ui/actions.dart b/app/lib/ui/actions.dart
+index 666b165..c7b5cf0 100644
+--- a/app/lib/ui/actions.dart
++++ b/app/lib/ui/actions.dart
+@@ -17,6 +17,12 @@ import 'token_setup_page.dart';
+ /// 点赞 / 收藏 / 评论都是"先乐观更新、失败回滚"的模式，
+ /// 抽到这里避免在多个页面重复。
+ 
++/// 作者关闭评论（[Post.isCommentClosed]）时的统一提示语。
++///
++/// 卡片按钮栏下方那行小字、详情页评论输入框的占位文案、以及"绕过界面直接
++/// 提交"时的兜底提示共用同一份，避免三处措辞各写各的、日后改文案漏改。
++const String commentsClosedNotice = '作者已关闭互动';
++
+ /// 点赞 / 取消点赞。
+ ///
+ /// [post] 的 [Post.isVoted] 会被就地更新，返回是否操作成功。
+diff --git a/app/lib/ui/post_detail_page.dart b/app/lib/ui/post_detail_page.dart
+index af31b06..4a973f8 100644
+--- a/app/lib/ui/post_detail_page.dart
++++ b/app/lib/ui/post_detail_page.dart
+@@ -131,6 +131,13 @@ class _PostDetailPageState extends State<PostDetailPage> {
+   }
+ 
+   Future<void> _sendComment() async {
++    // 作者关闭评论的动态（[Post.isCommentClosed]）不发请求：输入框已禁用，
++    // 这里挡的是"界面状态过期"——数据可能是旧缓存，权限是作者后来才关的，
++    // 直发就会换来一个语义性 500（见《动态评论权限状态-探查报告.md》第三节）。
++    if (widget.post.isCommentClosed) {
++      _toastNotice();
++      return;
++    }
+     final text = _commentInput.text.trim();
+     final emojis = List<Emoji>.of(_pendingEmojis);
+     if (text.isEmpty && emojis.isEmpty) return;
+@@ -194,6 +201,14 @@ class _PostDetailPageState extends State<PostDetailPage> {
+ 
+   // ---------------------------------------------------------- 评论互动
+ 
++  /// 提示一句「作者已关闭互动」。评论入口在关闭评论的动态上是禁用的，
++  /// 这个提示只服务于"绕过禁用界面"的旁路（键盘提交 / 无障碍 / 旧缓存数据）。
++  void _toastNotice() {
++    ScaffoldMessenger.of(context)
++      ..hideCurrentSnackBar()
++      ..showSnackBar(SnackBar(content: Text(commentsClosedNotice)));
++  }
++
+   /// 挑选 / 取消一个待发表情。
+   void _togglePendingEmoji(Emoji emoji) {
+     setState(() {
+@@ -207,7 +222,14 @@ class _PostDetailPageState extends State<PostDetailPage> {
+   }
+ 
+   /// 把某条评论设为回复目标（主评论与回复楼层通用）。
++  ///
++  /// 作者关闭评论时评论行的回复入口也一并不响应（输入框本来就是禁用的，
++  /// 放行只会把焦点送进一个不能打字的框里）。
+   void _startReply(Comment c) {
++    if (widget.post.isCommentClosed) {
++      _toastNotice();
++      return;
++    }
+     setState(() {
+       _replyTarget = c;
+       _emojiPanelOpen = false;
+@@ -850,6 +872,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
+   }
+ 
+   Widget _commentBar() {
++    // 作者关闭评论（[Post.isCommentClosed]）：输入框改为不可输入、占位文案
++    // 换成「作者已关闭互动」，表情与发送一并禁用 —— 整条评论栏只剩"看"。
++    // 已发出的评论照常展示，只是不再能回。
++    final closed = widget.post.isCommentClosed;
+     return Container(
+       decoration: BoxDecoration(
+         color: AppTheme.cardBackground,
+@@ -913,6 +939,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
+                   child: TextField(
+                     controller: _commentInput,
+                     focusNode: _commentFocus,
++                    // 作者关闭评论时整框不可输入，占位文案就是那句说明。
++                    enabled: !closed,
+                     // 多行自适应：1~6 行，换行自动长高，超过后框内滚动。
+                     keyboardType: TextInputType.multiline,
+                     textInputAction: TextInputAction.newline,
+@@ -920,9 +948,11 @@ class _PostDetailPageState extends State<PostDetailPage> {
+                     maxLines: 6,
+                     style: const TextStyle(fontSize: 14),
+                     decoration: InputDecoration(
+-                      hintText: _replyTarget == null
+-                          ? '说点什么…'
+-                          : '回复 @${_replyTarget!.user.nickname}…',
++                      hintText: closed
++                          ? commentsClosedNotice
++                          : (_replyTarget == null
++                              ? '说点什么…'
++                              : '回复 @${_replyTarget!.user.nickname}…'),
+                       contentPadding: const EdgeInsets.symmetric(
+                           horizontal: 12, vertical: 11),
+                     ),
+@@ -930,23 +960,28 @@ class _PostDetailPageState extends State<PostDetailPage> {
+                 ),
+                 // 表情入口在输入框右侧、发送键左边。
+                 IconButton(
+-                  onPressed: () =>
+-                      setState(() => _emojiPanelOpen = !_emojiPanelOpen),
++                  onPressed: closed
++                      ? null
++                      : () =>
++                          setState(() => _emojiPanelOpen = !_emojiPanelOpen),
+                   icon: Icon(
+                     _emojiPanelOpen
+                         ? Icons.emoji_emotions_rounded
+                         : Icons.emoji_emotions_outlined,
+                     size: 23,
+                   ),
+-                  color:
+-                      _emojiPanelOpen ? AppTheme.accent : AppTheme.inkTertiary,
++                  color: closed
++                      ? AppTheme.inkDisabled
++                      : (_emojiPanelOpen
++                          ? AppTheme.accent
++                          : AppTheme.inkTertiary),
+                   tooltip: '表情',
+                   visualDensity: VisualDensity.compact,
+                 ),
+                 Padding(
+                   padding: const EdgeInsets.only(left: 2, bottom: 1),
+                   child: FilledButton(
+-                    onPressed: _sending ? null : _sendComment,
++                    onPressed: (closed || _sending) ? null : _sendComment,
+                     style: FilledButton.styleFrom(
+                       minimumSize: const Size(0, 42),
+                       padding: const EdgeInsets.symmetric(horizontal: 16),
+diff --git a/app/lib/ui/widgets/post_card.dart b/app/lib/ui/widgets/post_card.dart
+index 1efa897..ae6faf9 100644
+--- a/app/lib/ui/widgets/post_card.dart
++++ b/app/lib/ui/widgets/post_card.dart
+@@ -167,7 +167,14 @@ class _PostCardState extends State<PostCard> {
+ 
+   /// 展开 / 收起快捷评论条。展开时自动聚焦输入框（下一帧，让键盘顶起时
+   /// TextField 的 ensureVisible 把评论条滚进视口）。
++  ///
++  /// 作者关闭评论的动态（[Post.isCommentClosed]）不开条子：按钮本身已置灰，
++  /// 这里是键盘 / 无障碍等旁路进来的兜底，就地回一句提示。
+   void _toggleComposer() {
++    if (post.isCommentClosed) {
++      _toast(commentsClosedNotice);
++      return;
++    }
+     final willOpen = !_composerOpen;
+     _anchorHeightChange(!willOpen);
+     log.d(LogTag.ui, '${willOpen ? '展开' : '收起'}内联评论条：${post.id}');
+@@ -216,6 +223,13 @@ class _PostCardState extends State<PostCard> {
+   /// 表情作为 media 图片项随 body 发送；成功后输入框清空（条子留着
+   /// 方便连发），按钮数字用本地增量即时 +1。
+   Future<void> _sendInlineComment() async {
++    // 界面上的评论入口在作者关闭评论时已经不可点，这里再挡一道：卡片数据
++    // 可能是旧缓存（权限是作者后来才关掉的），不挡就会把请求直发服务端，
++    // 换来一个语义性 500（见《动态评论权限状态-探查报告.md》第三节）。
++    if (post.isCommentClosed) {
++      _toast(commentsClosedNotice);
++      return;
++    }
+     final text = _composerInput.text.trim();
+     final emojis = List<Emoji>.of(_pendingEmojis);
+     if (text.isEmpty && emojis.isEmpty) return;
+@@ -819,15 +833,20 @@ class _PostCardState extends State<PostCard> {
+     final faved = widget.isFavourite ?? post.isFavourited;
+     final votes = post.votesCount;
+     final comments = post.commentsCount + _sentComments;
++    // 作者关闭评论：评论按钮置灰不可点，按钮栏下方另起一行小字说明
++    //（需求 2026-09-23）。
++    final commentsClosed = post.isCommentClosed;
+ 
+     // 互动组：评论 / 点赞 / 收藏（2026-09-22 需求：点赞与评论互换位置）。
+     final interactions = <Widget>[
+       // 评论：不进详情，原位展开/收起快捷评论条（网页微博式）。
++      // 作者关闭评论时按钮保持原样文字、只置灰不可点，理由写在下方那行小字里。
+       _actionItem(
+         icon: Icons.mode_comment_outlined,
+         label: comments > 0 ? compactCount(comments) : '评论',
+         active: _composerOpen,
+-        onTap: _toggleComposer,
++        disabled: commentsClosed,
++        onTap: commentsClosed ? null : _toggleComposer,
+       ),
+       const SizedBox(width: 4),
+       _actionItem(
+@@ -873,13 +892,40 @@ class _PostCardState extends State<PostCard> {
+ 
+     // 需求（2026-09-22 #12）：互动按钮默认右置（与原来最右侧的"折叠"
+     // 交换位置），设置里可切回左置。订阅设置以便切换后立即生效。
++    //
++    // 需求（2026-09-23）：作者关闭评论时，在按钮栏下方**另起一行**补一句小字
++    // 「作者已关闭互动」，并与互动组同侧对齐 —— 置灰的按钮只说明"不能点"，
++    // 这行字说明"为什么不能点"。开关切换也在同一个 builder 里重建。
+     return AnimatedBuilder(
+       animation: AppSettings.instance,
+-      builder: (context, _) => Row(
+-        children: AppSettings.instance.interactionButtonsOnRight
+-            ? [...tools, const Spacer(), ...interactions]
+-            : [...interactions, const Spacer(), ...tools],
+-      ),
++      builder: (context, _) {
++        final onRight = AppSettings.instance.interactionButtonsOnRight;
++        return Column(
++          crossAxisAlignment: CrossAxisAlignment.stretch,
++          children: [
++            Row(
++              children: onRight
++                  ? [...tools, const Spacer(), ...interactions]
++                  : [...interactions, const Spacer(), ...tools],
++            ),
++            if (commentsClosed)
++              Padding(
++                padding: const EdgeInsets.only(top: 3),
++                child: Align(
++                  alignment:
++                      onRight ? Alignment.centerRight : Alignment.centerLeft,
++                  child: Text(
++                    commentsClosedNotice,
++                    style: TextStyle(
++                      fontSize: 11.5,
++                      color: AppTheme.inkTertiary,
++                    ),
++                  ),
++                ),
++              ),
++          ],
++        );
++      },
+     );
+   }
+ 
+@@ -889,9 +935,13 @@ class _PostCardState extends State<PostCard> {
+     required bool active,
+     Color? activeColor,
+     VoidCallback? onTap,
++    // 置灰态：内容仍然显示，但整枚按钮按下无反应（作者关闭评论的评论按钮）。
++    bool disabled = false,
+   }) {
+     final ac = activeColor ?? AppTheme.accent;
+-    final color = active ? ac : AppTheme.inkTertiary;
++    final color = disabled
++        ? AppTheme.inkDisabled
++        : (active ? ac : AppTheme.inkTertiary);
+     return InkWell(
+       onTap: onTap,
+       borderRadius: BorderRadius.circular(6),

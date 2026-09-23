@@ -5,6 +5,8 @@ import '../../api/api_exception.dart';
 import '../../api/models.dart';
 import '../../api/simple_api.dart';
 import '../../data/settings.dart';
+import '../../data/vote_overlay.dart';
+import '../../data/vote_states.dart';
 import '../../state/app_scope.dart';
 import '../../util/app_log.dart';
 import '../../util/format.dart';
@@ -17,7 +19,9 @@ import 'linkified_text.dart';
 import 'media_grid.dart';
 import 'paged_post_list.dart';
 import 'pending_emoji_strip.dart';
+import 'remark_name.dart';
 import 'user_avatar.dart';
+import 'vote_state_bar.dart';
 
 /// 内容帖卡片。
 ///
@@ -35,6 +39,13 @@ import 'user_avatar.dart';
 ///
 /// 点「评论」按钮会在卡片下方**原位展开快捷评论条**（不进详情页，
 /// 网页微博式）：输入 + 表情随评，发送走与详情页同一套评论接口。
+///
+/// 长按「点赞」按钮在**同一个位置**展开一条**表态条**（理解 / 支持 /
+/// 加油 / 安慰 …），选中即送出，并把那个态度回显在按钮上 —— 官方 App 里
+/// 那条"可扩展点赞条"在本机的对应物（可送出的状态表见
+/// `data/vote_states.dart`）。形态刻意与快捷评论条同构：不用弹层、不用
+/// Overlay，高度变化照旧走 [PagedPostListAnchor] 锚定，不引入第二种
+/// 定位机制。
 ///
 /// 高度变化会让 `ListView` 里下方内容整体位移（观感是"画面猛地一跳"），
 /// 因此每次改变自身高度前都会通过 [PagedPostListAnchor] 请列表记下锚点，
@@ -94,6 +105,14 @@ class _PostCardState extends State<PostCard> {
   bool _collapsed = false;
 
   Post get post => widget.post;
+
+  // ------------------------------------------------------------ 内联表态条
+
+  /// 表态条展开态（长按点赞按钮开关）。
+  ///
+  /// 与快捷评论条**互斥**：两条同时摊开会让卡片一下子高出一大截，在这套
+  /// 对高度变化敏感的列表里不划算 —— 展开一条就收起另一条。
+  bool _voteBarOpen = false;
 
   // ------------------------------------------------------------ 内联评论条
 
@@ -163,16 +182,59 @@ class _PostCardState extends State<PostCard> {
     setState(() => _collapsed = value);
   }
 
+  // ---------------------------------------------------------- 内联表态交互
+
+  /// 长按点赞按钮：原位展开 / 收起表态条。
+  ///
+  /// 长按本身**不动点赞态** —— 真送出发生在选中一项之后（[_sendVoteState]），
+  /// 所以展开又收起不会留下任何痕迹。高度变化照旧先锚定（与评论条同一套）。
+  void _toggleVoteBar() {
+    final willOpen = !_voteBarOpen;
+    _anchorHeightChange(!willOpen);
+    log.d(LogTag.ui, '${willOpen ? '展开' : '收起'}表态条：${post.id}');
+    setState(() {
+      _voteBarOpen = willOpen;
+      if (willOpen && _composerOpen) {
+        // 与评论条互斥（见 [_voteBarOpen] 的说明）。
+        _composerOpen = false;
+        _composerEmojiOpen = false;
+        _composerFocus.unfocus();
+      }
+    });
+  }
+
+  /// 选中一个表态：先收起条，再送出。
+  ///
+  /// 先收再送：成功不会弹提示，按钮上的回显（表情 + 短名）就是反馈，
+  /// 条没必要赖在卡片里；失败了也不重开 —— 错误提示会说明原因
+  /// （见 [sendVoteState]）。
+  Future<void> _sendVoteState(String voteType) async {
+    if (_voteBarOpen) _toggleVoteBar();
+    final ok = await sendVoteState(context, post, voteType);
+    // 父级（列表页）不一定订阅了覆盖层，这里自己重建一次把按钮上的
+    // 态度回显刷新出来。
+    if (ok && mounted) setState(() {});
+  }
+
   // -------------------------------------------------------- 内联评论交互
 
   /// 展开 / 收起快捷评论条。展开时自动聚焦输入框（下一帧，让键盘顶起时
   /// TextField 的 ensureVisible 把评论条滚进视口）。
+  ///
+  /// 作者关闭评论的动态（[Post.isCommentClosed]）不开条子：按钮本身已置灰，
+  /// 这里是键盘 / 无障碍等旁路进来的兜底，就地回一句提示。
   void _toggleComposer() {
+    if (post.isCommentClosed) {
+      _toast(commentsClosedNotice);
+      return;
+    }
     final willOpen = !_composerOpen;
     _anchorHeightChange(!willOpen);
     log.d(LogTag.ui, '${willOpen ? '展开' : '收起'}内联评论条：${post.id}');
     setState(() {
       _composerOpen = willOpen;
+      // 与表态条互斥（见 [_voteBarOpen] 的说明）。
+      if (willOpen) _voteBarOpen = false;
       if (!willOpen) {
         _composerEmojiOpen = false;
         _composerFocus.unfocus();
@@ -216,6 +278,13 @@ class _PostCardState extends State<PostCard> {
   /// 表情作为 media 图片项随 body 发送；成功后输入框清空（条子留着
   /// 方便连发），按钮数字用本地增量即时 +1。
   Future<void> _sendInlineComment() async {
+    // 界面上的评论入口在作者关闭评论时已经不可点，这里再挡一道：卡片数据
+    // 可能是旧缓存（权限是作者后来才关掉的），不挡就会把请求直发服务端，
+    // 换来一个语义性 500（见《动态评论权限状态-探查报告.md》第三节）。
+    if (post.isCommentClosed) {
+      _toast(commentsClosedNotice);
+      return;
+    }
     final text = _composerInput.text.trim();
     final emojis = List<Emoji>.of(_pendingEmojis);
     if (text.isEmpty && emojis.isEmpty) return;
@@ -458,6 +527,13 @@ class _PostCardState extends State<PostCard> {
                   const SizedBox(height: 7),
                   _actions(showExpand: overflows || _textExpanded),
                 ],
+                // 表态条：紧贴按钮栏下方原位展开（长按点赞按钮开关）。
+                // 与快捷评论条同构、互斥，见 _toggleVoteBar。
+                if (_voteBarOpen)
+                  VoteStateBar(
+                    current: VoteOverlay.instance.postVoteType(post.id),
+                    onPick: _sendVoteState,
+                  ),
                 // 快捷评论条：展开/收起都走锚定（见 _toggleComposer），
                 // 放在按钮栏之后，属于卡片自身的高度变化。
                 if (_composerOpen) _inlineComposer(),
@@ -487,10 +563,10 @@ class _PostCardState extends State<PostCard> {
               Row(
                 children: [
                   Flexible(
-                    child: Text(
-                      post.user.nickname,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    // 昵称统一走 RemarkedText：设过备注就显示「本名（备注名）」。
+                    child: RemarkedText(
+                      nickname: post.user.nickname,
+                      userId: post.user.id,
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
@@ -819,26 +895,25 @@ class _PostCardState extends State<PostCard> {
     final faved = widget.isFavourite ?? post.isFavourited;
     final votes = post.votesCount;
     final comments = post.commentsCount + _sentComments;
+    // 我送出的态度（普通赞 / 没送过为 null）。读的是本机覆盖层：服务端
+    // 把"我这条是什么状态"藏起来了，详见 `data/vote_states.dart`。
+    final voteState =
+        VoteStates.byId(VoteOverlay.instance.postVoteType(post.id));
+    // 作者关闭评论：评论按钮置灰不可点，按钮栏下方另起一行小字说明
+    //（需求 2026-09-23）。
+    final commentsClosed = post.isCommentClosed;
 
-    // 互动组：评论 / 点赞 / 收藏（2026-09-22 需求：点赞与评论互换位置）。
+    // 互动组：收藏 / 评论 / 点赞。
+    //
+    // **顺序即需求（2026-09-23）**：从最右侧往左数，第一个是点赞、第二个是
+    // 评论、第三个是收藏 —— 因为按钮组默认右置（AppSettings
+    // .interactionButtonsOnRight），列表末尾的那个正好贴着右边缘，所以
+    // 这里按「左→右 = 收藏、评论、点赞」声明。左置时保持同一相对顺序，
+    // 右端依旧是点赞，口径一致。
+    //
+    // 收藏按钮仅在传入 onFavourite 时出现（合集内容等场景不展示）。
     final interactions = <Widget>[
-      // 评论：不进详情，原位展开/收起快捷评论条（网页微博式）。
-      _actionItem(
-        icon: Icons.mode_comment_outlined,
-        label: comments > 0 ? compactCount(comments) : '评论',
-        active: _composerOpen,
-        onTap: _toggleComposer,
-      ),
-      const SizedBox(width: 4),
-      _actionItem(
-        icon: voted ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-        label: votes == null ? '赞' : compactCount(votes),
-        active: voted,
-        activeColor: AppTheme.likeColor,
-        onTap: widget.onVote == null ? null : () => widget.onVote!(!voted),
-      ),
       if (widget.onFavourite != null) ...[
-        const SizedBox(width: 4),
         _actionItem(
           icon: faved ? Icons.star_rounded : Icons.star_border_rounded,
           label: faved ? '已收藏' : '收藏',
@@ -846,7 +921,31 @@ class _PostCardState extends State<PostCard> {
           activeColor: AppTheme.starColor,
           onTap: () => widget.onFavourite!(!faved),
         ),
+        const SizedBox(width: 4),
       ],
+      // 评论：不进详情，原位展开/收起快捷评论条（网页微博式）。
+      // 作者关闭评论时按钮保持原样文字、只置灰不可点，理由写在下方那行小字里。
+      _actionItem(
+        icon: Icons.mode_comment_outlined,
+        label: comments > 0 ? compactCount(comments) : '评论',
+        active: _composerOpen,
+        disabled: commentsClosed,
+        onTap: commentsClosed ? null : _toggleComposer,
+      ),
+      const SizedBox(width: 4),
+      _actionItem(
+        icon: voted ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+        // 送过态度就以那个态度的表情 + 短名回显（服务端那句文案太长，
+        // 塞不进按钮；完整文案见展开条上的长按提示）。
+        emoji: voteState?.emoji,
+        label:
+            voteState?.short ?? (votes == null ? '赞' : compactCount(votes)),
+        active: voted,
+        activeColor: AppTheme.likeColor,
+        onTap: widget.onVote == null ? null : () => widget.onVote!(!voted),
+        // 长按原位展开表态条。没接点赞回调的场景（只读卡片）不长按。
+        onLongPress: widget.onVote == null ? null : _toggleVoteBar,
+      ),
     ];
 
     // 操作组：展开全文 / 折叠 / 限制标记。
@@ -873,34 +972,75 @@ class _PostCardState extends State<PostCard> {
 
     // 需求（2026-09-22 #12）：互动按钮默认右置（与原来最右侧的"折叠"
     // 交换位置），设置里可切回左置。订阅设置以便切换后立即生效。
+    //
+    // 需求（2026-09-23）：作者关闭评论时，在按钮栏下方**另起一行**补一句小字
+    // 「作者已关闭互动」，并与互动组同侧对齐 —— 置灰的按钮只说明"不能点"，
+    // 这行字说明"为什么不能点"。开关切换也在同一个 builder 里重建。
     return AnimatedBuilder(
       animation: AppSettings.instance,
-      builder: (context, _) => Row(
-        children: AppSettings.instance.interactionButtonsOnRight
-            ? [...tools, const Spacer(), ...interactions]
-            : [...interactions, const Spacer(), ...tools],
-      ),
+      builder: (context, _) {
+        final onRight = AppSettings.instance.interactionButtonsOnRight;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: onRight
+                  ? [...tools, const Spacer(), ...interactions]
+                  : [...interactions, const Spacer(), ...tools],
+            ),
+            if (commentsClosed)
+              Padding(
+                padding: const EdgeInsets.only(top: 3),
+                child: Align(
+                  alignment:
+                      onRight ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Text(
+                    commentsClosedNotice,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: AppTheme.inkTertiary,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 
+  /// 按钮栏里的一个按钮。
+  ///
+  /// [emoji] 传了就替掉图标 —— 点赞按钮用它回显"我送出的态度"
+  /// （表情比一个心形更能说明"这条不是普通赞"）。
   Widget _actionItem({
     required IconData icon,
     required String label,
     required bool active,
     Color? activeColor,
+    String? emoji,
     VoidCallback? onTap,
+    VoidCallback? onLongPress,
+    // 置灰态：内容仍然显示，但整枚按钮按下无反应（作者关闭评论的评论按钮）。
+    bool disabled = false,
   }) {
     final ac = activeColor ?? AppTheme.accent;
-    final color = active ? ac : AppTheme.inkTertiary;
+    final color = disabled
+        ? AppTheme.inkDisabled
+        : (active ? ac : AppTheme.inkTertiary);
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(6),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 17, color: color),
+            if (emoji != null)
+              Text(emoji, style: const TextStyle(fontSize: 15, height: 1.1))
+            else
+              Icon(icon, size: 17, color: color),
             const SizedBox(width: 4),
             Text(
               label,

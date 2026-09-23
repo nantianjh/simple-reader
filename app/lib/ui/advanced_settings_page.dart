@@ -442,7 +442,7 @@ class _AdvancedSettingsPageState extends State<AdvancedSettingsPage> {
           const SizedBox(height: 6),
           Text(
             '把本机全部数据（设置、搜索历史、续读点、收藏的合集、已缓存的内容、'
-            '点赞记录）导出为一个 JSON 文件；换机或重装后导入即可恢复。'
+            '点赞记录、用户备注）导出为一个 JSON 文件；换机或重装后导入即可恢复。'
             '文件落在「下载/Simple阅读」里，用系统「文件」或数据线都能取走。'
             '备份不含访问凭证，导入后如需换账号请重新登录。'
             '导入也可以只恢复其中一部分：文件里没有的类别不会改动本机数据。',
@@ -528,7 +528,8 @@ class _AdvancedSettingsPageState extends State<AdvancedSettingsPage> {
           '其中的数量：已缓存内容 ${payload.cacheEntryCount} 页、'
           '收藏的合集 ${payload.collectionCount} 个、'
           '搜索历史 ${payload.historyCount} 条、'
-          '续读点 ${payload.readPositionCount} 个。\n\n'
+          '续读点 ${payload.readPositionCount} 个、'
+          '用户备注 ${payload.remarkCount} 条。\n\n'
           '导入会覆盖文件里列出的类别，本机这些数据不可恢复；'
           '文件里没有的类别保持原样。'
           '访问凭证不在备份里，需要重新登录。',
@@ -567,7 +568,8 @@ class _AdvancedSettingsPageState extends State<AdvancedSettingsPage> {
     _toast(
       '导入完成：缓存 ${summary.cacheEntries} 页、'
       '合集 ${summary.collections} 个、历史 ${summary.historyItems} 条、'
-      '续读点 ${summary.readPositions} 个（界面已刷新）',
+      '续读点 ${summary.readPositions} 个、备注 ${summary.remarks} 条'
+      '（界面已刷新）',
     );
   }
 

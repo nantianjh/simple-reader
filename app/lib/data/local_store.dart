@@ -30,6 +30,12 @@ class LocalStore {
   /// 表情面板全局缓存（包列表 + 各包/收藏内容，带 token 指纹与拉取时间）。
   static const String keyEmojiCache = 'simple_emoji_cache_v1';
 
+  /// 用户备注（userId → { nickname, remark, updatedAt }）。
+  ///
+  /// 放这里而不是单独一个懒加载文件：备注是**展示时同步读取**的全局规则
+  /// （信息流每张卡片都要取一次），启动预读进内存最省事。
+  static const String keyUserRemarks = 'simple_user_remarks';
+
   /// 上次展示过「更新内容」的版本号（纯字符串）。
   ///
   /// 刻意单独放一个键、不塞进设置：它是**本机**的阅读记账，跟着设备走；
@@ -44,6 +50,7 @@ class LocalStore {
     keyFavCollections,
     keyEmojiCache,
     keyLastSeenVersion,
+    keyUserRemarks,
   ];
 
   final Map<String, dynamic> _memory = {};

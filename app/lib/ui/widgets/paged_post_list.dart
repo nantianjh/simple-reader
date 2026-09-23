@@ -843,7 +843,7 @@ class _PagedPostListState extends State<PagedPostList> {
   /// 本次删除补偿的现场（见 [anchorItemRemoval] / [_restoreAfterRemoval]）。
   String? _removalId;
 
-  /// 参考条目 id 与它在**删除前**的视口内位置。
+  /// 参考条目（被删条目的**后继**）id 与它在**删除前**的视口内位置。
   Object? _removalRefId;
   double? _removalRefTop;
 
@@ -878,21 +878,26 @@ class _PagedPostListState extends State<PagedPostList> {
     _finishRemoval();
     _removalId = itemId;
 
-    // 参考条目：视口里最靠上的、**不是被删的那一条** —— 删除后要让它回到
-    // 删除前的位置，这样被删条目下方的内容就纹丝不动。
-    final refIds = <Object>[
-      for (final p in posts)
-        if (p.id != itemId) p.id,
-    ];
-    _removalRefId = widget.tracker.firstVisibleKey(refIds);
-    _removalRefTop = _removalRefId == null
-        ? null
-        : widget.tracker.viewportTopOfKey(_removalRefId!);
-
+    // 参考条目取被删条目的**后继**，而不是"视口最靠上的可见条目"
+    // （2026-09-23 核对报告定案的根因）：后继位于被删条目下方，"后继回到
+    // 删除前的视口位置"与"被删条目下方内容纹丝不动"是同一句话；而最靠上
+    // 可见条目几乎总是被删条目的**前驱**（只露出底部一条缝的那条），它在校正
+    // 口径下会把预跳完整撤销 —— 预跳把它推下去 shift、删除对上方条目无影响、
+    // 校正再按"回到删除前位置"拉回来，净效果等于无补偿就地删除。
+    //
+    // 后继测不到视口位置只有一种现实情形：它整体在 cacheExtent 之外 ——
+    // 此时被删条目自身也在视口下缘之外，删除不影响任何可见内容，无需补偿。
+    //
+    // 测量顺序：_removalRefTop 必须在预跳**之前**取（预跳会整体平移视口
+    // 内容），这样"预跳 + 删除"两步走完后，残差才以 0 为目标。
+    Object? nextId;
     double? shift;
     if (i + 1 < posts.length) {
+      nextId = posts[i + 1].id;
+      _removalRefId = nextId;
+      _removalRefTop = widget.tracker.viewportTopOfKey(nextId);
       final removedTop = widget.tracker.offsetOfKey(itemId);
-      final nextTop = widget.tracker.offsetOfKey(posts[i + 1].id);
+      final nextTop = widget.tracker.offsetOfKey(nextId);
       if (removedTop != null && nextTop != null) shift = nextTop - removedTop;
     }
     if (shift == null || shift <= 0) {
@@ -914,11 +919,15 @@ class _PagedPostListState extends State<PagedPostList> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _restoreAfterRemoval());
   }
 
-  /// 删除落地后量残差：把参考条目放回它删除前的视口位置。
+  /// 删除落地后量残差：把**后继条目**放回它删除前的视口位置。
   ///
-  /// 预跳覆盖的是"被删条目自身的高度"；删除还会重算「上次浏览到这儿」分界，
-  /// 分界条跨过视口时也有几十像素的位移。这里用参考条目的实测位移补齐 ——
-  /// 预跳准确时残差为 0，等于什么都不做。
+  /// 预跳量取"被删条目与后继的内容坐标差"，在两种情形下会偏离真实塌缩
+  /// 高度，残差由这里按后继的实测位移补齐：
+  /// * 两者之间夹着**不参与塌缩**的行（「上次浏览到这儿」分界条、页尾跳页
+  ///   入口、下一页页眉 —— 删除只让它们挪位，并不消失）→ 预跳量偏大；
+  /// * 预跳被列表边界钳住（顶部删除，滚动已为 0）→ 预跳量偏小乃至为零。
+  /// 预跳准确时残差为 0，这里什么都不做（分界重算与数据变更同步，重建帧里
+  /// 分界条已是终态，第一帧量到的就是最终布局）。
   ///
   /// **安全阀**与 [_restoreAnchor] 同口径：期间偏移被外部改过（用户自己滚了）
   /// 就立刻放弃，避免把用户的滑动量当布局漂移再补偿一次。
@@ -946,36 +955,41 @@ class _PagedPostListState extends State<PagedPostList> {
 
     final after = widget.tracker.viewportTopOfKey(refId);
     if (after == null) {
-      // 参考条目还没渲染出来（重建后的懒构建）→ 再等一帧。
+      // 后继还没渲染出来（重建后的懒构建）→ 再等一帧。
       if (_removalRounds < _maxRemovalRounds) {
         _removalRounds++;
         WidgetsBinding.instance
             .addPostFrameCallback((_) => _restoreAfterRemoval());
         return;
       }
-      log.d(LogTag.ui, '删除补偿放弃：参考条目 $refId 未能渲染');
+      log.d(LogTag.ui, '删除补偿放弃：后继条目 $refId 未能渲染');
       _finishRemoval();
       return;
     }
 
     final delta = after - refTopBefore;
+    var corrected = false;
     if (delta.abs() >= 0.5) {
       final target =
           (scroll.offset + delta).clamp(0.0, scroll.position.maxScrollExtent);
       if ((target - scroll.offset).abs() >= 0.5) {
         log.i(
           LogTag.ui,
-          '删除后残差校正：参考 $refId 视口位置 '
+          '删除后残差校正：后继 $refId 视口位置 '
           '${refTopBefore.toStringAsFixed(1)} → ${after.toStringAsFixed(1)}，'
           '滚动 ${scroll.offset.toStringAsFixed(1)} → '
           '${target.toStringAsFixed(1)}',
         );
         _jumpWithProbe(scroll, target, '删除残差');
         _removalAppliedOffset = target;
+        corrected = true;
       }
     }
 
-    if (_removalRounds < _maxRemovalRounds) {
+    // 二次校正约束（2026-09-23 核对报告第 4 节）：只有本轮**确实动过偏移**
+    // 才需要再验一帧（确认校正落地、没有新的布局漂移）；残差≈0 说明布局
+    // 已稳定，直接收尾、不再空转。
+    if (corrected && _removalRounds < _maxRemovalRounds) {
       _removalRounds++;
       WidgetsBinding.instance.addPostFrameCallback((_) => _restoreAfterRemoval());
     } else {
@@ -1581,7 +1595,8 @@ typedef ItemWillBeRemoved = void Function(String itemId);
 /// 把「条目高度将变 / 条目将删除，请先记下锚点」的能力透传给列表项里的卡片。
 ///
 /// 卡片（`PostCard`）知道用户何时展开了正文/折叠了整条，但只有列表知道
-/// 该锚定哪一条（视口里最靠上的那条）。用 InheritedWidget 把回调传下去，
+/// 该锚定哪一条（高度变化锚视口里最靠上的那条；删除锚被删条目的后继）。
+/// 用 InheritedWidget 把回调传下去，
 /// 卡片不必层层接收参数，三个调用点（搜索 / 收藏 / 合集）也都不用改。
 class PagedPostListAnchor extends InheritedWidget {
   const PagedPostListAnchor({
