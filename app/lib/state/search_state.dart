@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show listEquals;
 
 import '../api/api_config.dart';
@@ -166,5 +168,13 @@ class SearchPageController extends PagedListController {
     finishLoad();
     // 已读线按存档里的已读线恢复（停留位置可能比读过的位置更靠前）。
     if (resumeAt != null) restoreReadLine(resumeAt);
+
+    // 同词再次提交 = 重新抓取：首屏（最新的一页）拿到后继续往后翻，
+    // 一路抓到「上次浏览到这儿」分界为止 —— 分界之后是上次的内容，
+    // 不再重复抓取。后台串行进行，UI 显示等待态；首次检索（没有上次
+    // 浏览快照）不会启动，见 [autoFetchToBoundary]。
+    if (ok && resumeAt == null && forceNetwork) {
+      unawaited(autoFetchToBoundary());
+    }
   }
 }

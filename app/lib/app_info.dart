@@ -10,7 +10,7 @@ class AppInfo {
   static const String name = 'Simple阅读';
 
   /// 应用版本号（不含 build number）。
-  static const String version = '1.9.7';
+  static const String version = '1.9.8';
 
   /// 跨端识别用的稳定标识：备份文件的 `app` 字段与将来的网页版共用同值。
   static const String appId = 'simple-reader';

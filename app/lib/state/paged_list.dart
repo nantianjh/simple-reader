@@ -141,6 +141,32 @@ abstract class PagedListController extends ChangeNotifier {
   /// 是否已经发起过至少一次内容请求。
   bool ran = false;
 
+  /// 是否正在「自动续抓到分界」（见 [autoFetchToBoundary]）。
+  ///
+  /// 为真期间 UI 用等待态接管结果区：内容是分批进来的，抓完整批才开始
+  /// 浏览，避免"边抓边读"时列表被反复插入内容。
+  bool _autoFetching = false;
+
+  /// 自动续抓的取消标志。换词 / 新检索 / 重置时置位，循环下一轮退出。
+  bool _autoFetchCanceled = false;
+
+  /// 自动续抓的批次号。每次启动 / 每次 [reset] 递增。
+  ///
+  /// 用途是给「在途循环」判活：用户在续抓进行中再次提交（同词重抓），
+  /// 新批次启动后旧循环才从网络返回，它的 `finally` 若无条件清标志，会把
+  /// 新批次的等待态提前撤掉（UI 突然跳回列表、抓取却在继续）。带上批次号
+  /// 只有"当前批次"有权收尾。
+  int _autoFetchToken = 0;
+
+  /// 本次自动续抓的结束原因（供日志与一次性提示使用）。
+  String? _autoFetchStopReason;
+
+  /// 自动续抓最多再往后翻多少页。
+  ///
+  /// 防御性上限：热词可能持续产出新内容，永远碰不到上次浏览的那批，
+  /// 没有上限就会无休止翻页（每页至少 1.2s 串行限速）。
+  static const int _maxAutoFetchPages = 30;
+
   /// 本地缓存覆盖到的最深页号（0 起），-1 = 未知。
   ///
   /// 与 [_cursors] 的长度不是一回事：最后一页抓取成功且服务端说还有更多时，
@@ -188,6 +214,14 @@ abstract class PagedListController extends ChangeNotifier {
     final b = _cachedBoundary;
     return (b == null || b <= 0) ? null : b;
   }
+
+  /// 是否正在自动续抓到「上次浏览到这儿」分界（UI 显示等待态）。
+  bool get autoFetching => _autoFetching;
+
+  /// 本次自动续抓的结束原因：`boundary`（接上上次内容）/ `end`
+  /// （服务端到底）/ `limit`（达到页数上限）/ `error`（某页失败）/
+  /// `canceled`（被换词或新检索打断）。未发生过为 null。
+  String? get autoFetchStopReason => _autoFetchStopReason;
 
   /// 已读线所在页，-1 表示当前视图里没有可用的已读线。
   int get readPage => _readPage;
@@ -362,6 +396,12 @@ abstract class PagedListController extends ChangeNotifier {
     _filteredCount = 0;
     _cachedDeepPage = -1;
     offlineReading = false;
+    // 重置 = 内容换血流：正在进行的自动续抓必须停下，否则它会继续把上一批
+    // 的页翻进新结果里（换词后列表里出现别的内容，就是这个漏掉的后果）。
+    cancelAutoFetch();
+    _autoFetchToken++; // 作废任何在途批次，避免它回头清掉新批次的状态
+    _autoFetching = false;
+    _autoFetchStopReason = null;
   }
 
   /// 吸收续读点里的游标链，使目标页可以直接寻址。
@@ -482,13 +522,16 @@ abstract class PagedListController extends ChangeNotifier {
   }
 
   /// 抓下一页（当前页末尾再往上滑）。
-  Future<bool> nextPage() async {
+  ///
+  /// [mode] 缺省用 [autoMode]；自动续抓显式传 networkFirst —— 续抓要的是
+  /// 服务端最新序列，走 preferCache 会命中上次那批缓存，等于原地不动。
+  Future<bool> nextPage({CacheMode? mode}) async {
     final l = _lastPage;
     if (l == null || !hasNextPage) return false;
     // 续读会话里缓存已经读完：不再尝试抓取（cacheOnly 必然未命中），
     // 页脚与自动补页都已切换到「缓存读完」口径，这里短路省一次读盘。
     if (offlineReading && !hasNextCachedPage) return false;
-    return loadPage(l + 1);
+    return loadPage(l + 1, mode: mode);
   }
 
   /// 抓上一页（当前页开头再往下滑）。
@@ -572,6 +615,131 @@ abstract class PagedListController extends ChangeNotifier {
       _loadedOnce = _loadedOnce || ok;
     }
     notifyListeners();
+    // 下拉刷新同样是一次「重新抓取」：一路抓到「上次浏览到这儿」分界。
+    if (ok) unawaited(autoFetchToBoundary());
+  }
+
+  // ------------------------------------------------------ 自动续抓到分界
+
+  /// 重新抓取后自动向后翻页，一路抓到「上次浏览到这儿」分界为止。
+  ///
+  /// 语义（需求）：重抓拿到的是服务端最新的一段，要一直往旧的方向翻，
+  /// 直到与上次浏览过的内容接上 —— 分界出现处就是上次内容的起点，
+  /// 之后不再重复抓取。因此终止判据用**原始** [_cachedBoundary]（含 0）：
+  /// 0 表示本次一条新内容都没抓到（首屏就接上了），同样算到达。
+  ///
+  /// 停止条件（先命中先停）：
+  /// * `boundary` 出现分界 —— 目标达成；
+  /// * `end` 没有下一页 —— 服务端到底；
+  /// * `error` 某页抓取失败 —— 保留已抓到的内容，错误交由 UI 展示；
+  /// * `limit` 达到 [_maxAutoFetchPages] —— 防御性上限；
+  /// * `canceled` 被换词 / 新检索打断（[cancelAutoFetch]）。
+  ///
+  /// 前置守卫：没有上次浏览快照（首次检索）时直接返回 —— 那既是需求约束
+  /// （没有分界可依），也是避免无限翻页死循环的根本手段。
+  ///
+  /// 串行限速由 `ApiClient` 保证（每页间隔 >= 1.2s），这里不额外加延迟；
+  /// 抓完一批之前 UI 处于等待态，因此不存在"边抓边读导致位置漂移"的问题。
+  Future<void> autoFetchToBoundary() async {
+    if (_prevSessionIds.isEmpty) {
+      log.i(LogTag.page, '自动续抓未启动：没有上次浏览快照（首次检索）');
+      return;
+    }
+    if (_cachedBoundary != null) {
+      log.i(
+        LogTag.page,
+        '自动续抓未启动：首屏已与上次内容接上（分界在第 '
+        '${_cachedBoundary! + 1} 条）',
+      );
+      return;
+    }
+    if (!hasNextPage) {
+      log.i(LogTag.page, '自动续抓未启动：没有下一页');
+      return;
+    }
+
+    final token = ++_autoFetchToken;
+    _autoFetching = true;
+    _autoFetchCanceled = false;
+    _autoFetchStopReason = null;
+    notifyListeners();
+    log.i(
+      LogTag.page,
+      '自动续抓开始：向后翻页直到「上次浏览到这儿」分界'
+      '（上限 $_maxAutoFetchPages 页）',
+    );
+
+    var rounds = 0;
+    var reason = 'boundary';
+    try {
+      while (true) {
+        if (_autoFetchCanceled) {
+          reason = 'canceled';
+          break;
+        }
+        if (_cachedBoundary != null) {
+          reason = 'boundary';
+          break;
+        }
+        if (!hasNextPage) {
+          reason = 'end';
+          break;
+        }
+        if (rounds >= _maxAutoFetchPages) {
+          reason = 'limit';
+          break;
+        }
+        final ok = await nextPage(mode: CacheMode.networkFirst);
+        rounds++;
+        if (!ok) {
+          reason = 'error';
+          break;
+        }
+      }
+      _autoFetchStopReason = reason;
+      if (reason == 'boundary') {
+        log.i(
+          LogTag.page,
+          '自动续抓完成：又抓 $rounds 页后接上上次内容'
+          '（分界在第 ${_cachedBoundary! + 1} 条，共 ${_flat.length} 条）',
+        );
+      } else if (reason == 'end') {
+        log.i(
+          LogTag.page,
+          '自动续抓结束：服务端已无更多内容（又抓 $rounds 页，'
+          '共 ${_flat.length} 条）',
+        );
+      } else if (reason == 'limit') {
+        log.w(
+          LogTag.page,
+          '自动续抓终止：已达 $_maxAutoFetchPages 页上限，仍未接上上次内容',
+        );
+        setNotice('已连续抓取 $_maxAutoFetchPages 页，仍未回到上次浏览位置；'
+            '可继续向下滑动加载，或再次点击搜索');
+      } else if (reason == 'error') {
+        log.w(
+          LogTag.page,
+          '自动续抓中止：第 ${(_lastPage ?? 0) + 2} 页抓取失败'
+          '（已抓 $rounds 页，共 ${_flat.length} 条）',
+        );
+      } else {
+        log.i(LogTag.page, '自动续抓被取消（已抓 $rounds 页）');
+      }
+    } finally {
+      // 只有仍是当前批次才有资格收尾（见 [_autoFetchToken]）。
+      if (token == _autoFetchToken) {
+        _autoFetching = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  /// 取消正在进行的自动续抓。
+  ///
+  /// 内容整体换血流（换词 / 新检索 / [reset]）时必须调用：否则上一批的
+  /// 翻页循环会继续往新词的结果里塞内容。只置标志，循环下一轮自行退出。
+  void cancelAutoFetch() {
+    _autoFetchCanceled = true;
   }
 
   Future<void> retry() async {

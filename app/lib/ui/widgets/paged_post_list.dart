@@ -1186,32 +1186,52 @@ class _PagedPostListState extends State<PagedPostList> {
 
   /// 「上次浏览到这儿」分界条：插在新抓取内容与上次已缓存内容之间，
   /// 提示"从这里往下是上次已经浏览过的"。
+  ///
+  /// 整条做成一条主色色带（淡底 + 上下边线 + 左侧竖条）：它是一条**分界**，
+  /// 必须在快速滑动时也能被一眼扫到，此前那种"细灰线 + 三级灰小字"的
+  /// 权重在瀑布流里几乎等于不存在。
   Widget _cachedBoundaryMarker() {
+    final accent = AppTheme.accent;
     return Container(
-      color: AppTheme.cardBackground,
-      padding: const EdgeInsets.symmetric(vertical: 11),
+      decoration: BoxDecoration(
+        color: AppTheme.infoBackground,
+        border: Border.symmetric(
+          horizontal: BorderSide(color: accent.withValues(alpha: 0.35), width: 0.7),
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       child: Row(
         children: [
-          const Expanded(child: Divider()),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.history_rounded,
-                    size: 12.5, color: AppTheme.inkTertiary),
-                const SizedBox(width: 4),
-                Text(
-                  '上次浏览到这儿',
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    color: AppTheme.inkTertiary,
-                  ),
-                ),
-              ],
+          Container(
+            width: 3,
+            height: 15,
+            decoration: BoxDecoration(
+              color: accent,
+              borderRadius: BorderRadius.circular(2),
             ),
           ),
-          const Expanded(child: Divider()),
+          const SizedBox(width: 8),
+          Icon(Icons.history_rounded, size: 15.5, color: accent),
+          const SizedBox(width: 6),
+          Text(
+            '上次浏览到这儿',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: accent,
+              letterSpacing: 0.3,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '往下是上次看过的内容',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
+              style: TextStyle(fontSize: 11.5, color: AppTheme.inkSecondary),
+            ),
+          ),
         ],
       ),
     );

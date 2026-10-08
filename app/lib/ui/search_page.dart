@@ -238,6 +238,12 @@ class _SearchPageState extends State<SearchPage>
 
   // ------------------------------------------------------------ 搜索历史
 
+  /// 自动续抓（重抓到「上次浏览到这儿」分界）期间是否占用过结果区。
+  ///
+  /// 用于识别"等待态 → 列表"的转换：转换发生时列表是新建的，视口默认在
+  /// 顶端，但仍显式回顶一次 —— 用户应当从最新内容开始往下读。
+  bool _autoFetchWasActive = false;
+
   /// 是否正在看「历史搜索词列表」。
   ///
   /// 与 [SearchPageController.hasSearched] 无关：结果还在（点一下就能回去），
@@ -421,6 +427,19 @@ class _SearchPageState extends State<SearchPage>
         onRetry: _search.retry,
       );
     }
+    // 重新抓取的等待态：内容分批进来，抓完整批才进入阅读，因此这里直接
+    // 接管结果区，不渲染列表。
+    if (_search.autoFetching) {
+      _autoFetchWasActive = true;
+      return _autoFetchProgress();
+    }
+    if (_autoFetchWasActive) {
+      _autoFetchWasActive = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_scroll.hasClients) return;
+        if (_scroll.offset > 0) _scroll.jumpTo(0);
+      });
+    }
     if (_search.isEmptyResult) return _noResult();
 
     return PagedPostList(
@@ -448,6 +467,55 @@ class _SearchPageState extends State<SearchPage>
           final ok = await toggleFavourite(context, post);
           if (ok && mounted) setState(() {});
         },
+      ),
+    );
+  }
+
+  /// 重新抓取的等待态：一路抓到「上次浏览到这儿」分界期间占用结果区。
+  ///
+  /// 抓取在后台串行进行（每页受接口串行限速约束），用户离开本页也不会
+  /// 中断；回来时看到的仍是目前进度。抓完整批才切回列表开始阅读。
+  Widget _autoFetchProgress() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(28, 24, 28, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 26,
+              height: 26,
+              child: CircularProgressIndicator(strokeWidth: 2.4),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '正在抓取「${_search.keyword}」的新内容…',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 14.5,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.inkPrimary,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '已抓到第 ${_search.pageCount} 页 · ${_search.itemCount} 条，'
+              '一直抓到「上次浏览到这儿」为止',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12.5,
+                color: AppTheme.inkTertiary,
+                height: 1.6,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              '可以离开本页，抓取会继续；完成后自动回到最新内容',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11.5, color: AppTheme.inkDisabled),
+            ),
+          ],
+        ),
       ),
     );
   }
