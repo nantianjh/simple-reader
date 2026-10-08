@@ -46,4 +46,7 @@ Desktop.ini
 # ── 会话/命令输出草稿：本机 `命令 > _xxx.txt` 的落盘文件，从不入库 ──────
 # 来源：沙箱取输出必须先落盘再 Read（见 memory 踩坑铁律），日积月累会污染 git add -A
 _*.txt
+_*.ps1
+_*.cmd
+_*.js
 analysis/_*
