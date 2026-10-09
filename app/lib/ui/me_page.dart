@@ -7,6 +7,7 @@ import '../state/app_state.dart';
 import '../util/app_log.dart';
 import '../util/format.dart';
 import 'advanced_settings_page.dart';
+import 'aggregate_settings_page.dart';
 import 'theme.dart';
 import 'token_setup_page.dart';
 import 'widgets/brightness_aware.dart';
@@ -16,8 +17,8 @@ import 'widgets/user_avatar.dart';
 ///
 /// 需求调整：诊断及其下方的本地数据 / 凭证操作 / 关于等设置项已收进
 /// 「高级设置」二级页（[AdvancedSettingsPage]）；本页保留账号、凭证、
-/// 外观、搜索、浏览与交互五张卡，以及「切换到网页版」（需求明确要求
-/// 留在本页）与「高级设置」两个入口。
+/// 外观、搜索、综合阅读、浏览与交互六张卡，以及「切换到网页版」
+/// （需求明确要求留在本页）与「高级设置」两个入口。
 ///
 /// **放置规则（2026-10-09 约定）**：凡是用户直接感知的交互开关
 /// （互动按钮位置、详情页定位、抓取后起始位置、续读询问这类）
@@ -181,6 +182,11 @@ class _MePageState extends State<MePage> with AutomaticKeepAliveClientMixin {
           AnimatedBuilder(
             animation: AppSettings.instance,
             builder: (context, _) => _searchCard(),
+          ),
+          const SizedBox(height: 14),
+          AnimatedBuilder(
+            animation: AppSettings.instance,
+            builder: (context, _) => _aggregateCard(),
           ),
           const SizedBox(height: 14),
           AnimatedBuilder(
@@ -387,6 +393,36 @@ class _MePageState extends State<MePage> with AutomaticKeepAliveClientMixin {
         ],
       ),
     );
+  }
+
+  // -------------------------------------------------------- 综合阅读卡
+
+  Widget _aggregateCard() {
+    final n = AppSettings.instance.aggregateKeywords.length;
+    return _card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _cardTitle('综合阅读'),
+          const SizedBox(height: 4),
+          _actionRow(
+            icon: Icons.auto_awesome_rounded,
+            title: '搜索词名单',
+            subtitle: n == 0
+                ? '从搜索历史里挑几个词，把各自的最新内容合并成一个列表阅读'
+                : '已选 $n 个关键词 · 从搜索历史中挑选',
+            onTap: _openAggregateSettingsPage,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openAggregateSettingsPage() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const AggregateSettingsPage()),
+    );
+    if (mounted) setState(() {}); // 返回后刷新副标题里的计数
   }
 
   // -------------------------------------------------------- 浏览与交互卡

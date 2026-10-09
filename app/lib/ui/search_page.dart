@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 
+import '../api/models.dart';
 import '../api/simple_api.dart';
 import '../data/reading_positions.dart';
 import '../data/search_history.dart';
 import '../data/settings.dart';
+import '../state/aggregate_feed.dart';
 import '../state/app_scope.dart';
 import '../state/app_state.dart';
 import '../state/load_phase.dart';
@@ -11,9 +13,11 @@ import '../state/search_state.dart';
 import '../util/app_log.dart';
 import '../util/format.dart';
 import 'actions.dart';
+import 'aggregate_settings_page.dart';
 import 'collection_detail_page.dart';
 import 'post_detail_page.dart';
 import 'theme.dart';
+import 'widgets/aggregate_feed_view.dart';
 import 'widgets/brightness_aware.dart';
 import 'widgets/paged_post_list.dart';
 import 'widgets/post_card.dart';
@@ -54,6 +58,7 @@ class _SearchPageState extends State<SearchPage>
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scroll = ScrollController();
   late final SearchPageController _search;
+  late final AggregateFeedController _aggregate;
   late final ItemVisibilityTracker _tracker;
 
   @override
@@ -70,6 +75,13 @@ class _SearchPageState extends State<SearchPage>
     )..onAuthFailure = (msg) {
         if (mounted) app.markUnauthorized(msg);
       };
+    final api = SimpleApi();
+    _aggregate = AggregateFeedController(
+      tokenProvider: () => app.token,
+      fetcher: api.searchPosts,
+    )..onAuthFailure = (msg) {
+        if (mounted) app.markUnauthorized(msg);
+      };
   }
 
   @override
@@ -77,6 +89,7 @@ class _SearchPageState extends State<SearchPage>
     _scroll.dispose();
     _controller.dispose();
     _search.dispose();
+    _aggregate.dispose();
     super.dispose();
   }
 
@@ -107,6 +120,8 @@ class _SearchPageState extends State<SearchPage>
 
     FocusScope.of(context).unfocus();
     _historyMode = false;
+    // 提交搜索 = 离开综合阅读视图（内容留着，随时可以再点「综合阅读」回去）。
+    if (_aggregateMode) setState(() => _aggregateMode = false);
 
     ReadingPosition? resumeAt;
     if (!sameTerm) {
@@ -135,6 +150,85 @@ class _SearchPageState extends State<SearchPage>
       await _jumpToReadPosition();
     }
     if (mounted) setState(() {});
+  }
+
+  // -------------------------------------------------------------- 综合阅读
+
+  /// 打开 / 刷新「综合阅读」（结果区让给多关键词合并视图）。
+  ///
+  /// 行为与"点历史词"同构：
+  /// * 第一次打开、或关键词名单被改过 → 优先读缓存（秒开，不打扰服务端）；
+  /// * 已在综合阅读里再点一次 → 等同"同词再次提交"：强制联网重抓，并自动
+  ///   续抓到「上次浏览到这儿」为止（每个关键词各自退出，见控制器）。
+  Future<void> _openAggregate() async {
+    FocusScope.of(context).unfocus();
+
+    setState(() {
+      _aggregateMode = true;
+      _historyMode = false;
+      _historyDeleteMode = false;
+      _resumeAtBoundary = false;
+    });
+
+    final list = AppSettings.instance.aggregateKeywords;
+    if (list.isEmpty) {
+      _toast('请先挑选参与综合阅读的关键词');
+      await _openAggregateSettings();
+      return;
+    }
+
+    if (!_aggregate.ran || !_aggregate.matchesKeywords(list)) {
+      await _aggregate.start(list);
+    } else {
+      await _aggregate.start(list, forceNetwork: true);
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// 打开「综合阅读」设置页（挑关键词）；返回后名单有变动就重新抓一轮。
+  Future<void> _openAggregateSettings() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const AggregateSettingsPage()),
+    );
+    if (!mounted) return;
+
+    final list = AppSettings.instance.aggregateKeywords;
+    if (list.isEmpty) {
+      _aggregate.reset();
+    } else if (!_aggregate.matchesKeywords(list)) {
+      await _aggregate.start(list);
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// 综合阅读的结果区。
+  Widget _aggregateView() {
+    return AggregateFeedView(
+      controller: _aggregate,
+      onOpenSettings: _openAggregateSettings,
+      itemBuilder: (context, post, index) =>
+          _postCard(context, post, isRead: false),
+    );
+  }
+
+  /// 列表卡片（搜索结果与综合阅读共用同一套交互）。
+  Widget _postCard(BuildContext context, Post post, {required bool isRead}) {
+    return PostCard(
+      post: post,
+      isRead: isRead,
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => PostDetailPage(post: post)),
+      ),
+      onCollectionTap: () => openCollectionOfPost(context, post),
+      onVote: (target) async {
+        final ok = await toggleVote(context, post);
+        if (ok && mounted) setState(() {});
+      },
+      onFavourite: (target) async {
+        final ok = await toggleFavourite(context, post);
+        if (ok && mounted) setState(() {});
+      },
+    );
   }
 
   // ---------------------------------------------------- 抓取完成后的去处
@@ -360,6 +454,12 @@ class _SearchPageState extends State<SearchPage>
   /// 只是把结果区临时让给历史词列表。搜索框右侧的按钮切换这个状态。
   bool _historyMode = false;
 
+  /// 是否正在看「综合阅读」（多关键词合并视图）。
+  ///
+  /// 与 [SearchPageController] 无关：综合阅读有自己的控制器与列表，
+  /// 这里只决定结果区渲染谁（见 [_results]）。入口在历史词墙的第一位。
+  bool _aggregateMode = false;
+
   void _openHistory() {
     FocusScope.of(context).unfocus();
     log.d(LogTag.ui, '切到搜索历史列表（上次检索：${_search.keyword}）');
@@ -525,8 +625,12 @@ class _SearchPageState extends State<SearchPage>
   // ---------------------------------------------------------------- 结果
 
   Widget _results() {
-    // 还没有内容可展示，或用户点了「搜索历史」：铺开历史关键词按钮墙。
-    if (_historyMode || !_search.hasSearched) return _historyWall();
+    // 用户点了「搜索历史」（搜索结果还留着，点一下就能回去）。
+    if (_historyMode) return _historyWall();
+    // 综合阅读：多关键词合并视图（自己的控制器与列表）。
+    if (_aggregateMode) return _aggregateView();
+    // 还没有内容可展示：铺开历史关键词按钮墙。
+    if (!_search.hasSearched) return _historyWall();
 
     if (_search.phase == LoadPhase.loadingFirst && _search.posts.isEmpty) {
       return const LoadingView(message: '正在检索…');
@@ -564,21 +668,10 @@ class _SearchPageState extends State<SearchPage>
           _filteredBanner(),
         ],
       ),
-      itemBuilder: (context, post, index) => PostCard(
-        post: post,
+      itemBuilder: (context, post, index) => _postCard(
+        context,
+        post,
         isRead: _search.isReadAt(index),
-        onTap: () => Navigator.of(context).push(
-          MaterialPageRoute<void>(builder: (_) => PostDetailPage(post: post)),
-        ),
-        onCollectionTap: () => openCollectionOfPost(context, post),
-        onVote: (target) async {
-          final ok = await toggleVote(context, post);
-          if (ok && mounted) setState(() {});
-        },
-        onFavourite: (target) async {
-          final ok = await toggleFavourite(context, post);
-          if (ok && mounted) setState(() {});
-        },
       ),
     );
   }
@@ -761,15 +854,15 @@ class _SearchPageState extends State<SearchPage>
     return ListView(
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 28),
       children: [
-        // 从结果页切过来的：给一条明确的回头路，别让上次的结果白跑一趟。
-        if (_search.hasSearched && _search.posts.isNotEmpty)
+        // 从结果页 / 综合阅读切过来的：给一条明确的回头路，别让上次的结果白跑一趟。
+        if (_aggregateMode || (_search.hasSearched && _search.posts.isNotEmpty))
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: OutlinedButton.icon(
               onPressed: _backToResults,
               icon: const Icon(Icons.arrow_back_rounded, size: 16),
               label: Text(
-                '返回「${_search.keyword}」的检索结果',
+                _aggregateMode ? '返回综合阅读' : '返回「${_search.keyword}」的检索结果',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 13),
@@ -831,6 +924,16 @@ class _SearchPageState extends State<SearchPage>
             ),
           ),
         const SizedBox(height: 8),
+        // 词条墙：第一个永远是「综合阅读」——特殊样式的"搜索词"，不是历史词，
+        // 由设置里的关键词名单驱动；不接受删除、清空，历史为空时也照常提供。
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _aggregateChip(),
+            for (final k in items) _historyChip(k),
+          ],
+        ),
         if (items.isEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 26),
@@ -845,14 +948,6 @@ class _SearchPageState extends State<SearchPage>
                 ),
               ),
             ),
-          )
-        else
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final k in items) _historyChip(k),
-            ],
           ),
       ],
     );
@@ -901,6 +996,43 @@ class _SearchPageState extends State<SearchPage>
                 ),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 「综合阅读」入口词条：特殊样式的"搜索词"。
+  ///
+  /// 与普通历史词的区别（需求 2026-10-09）：
+  /// * 始终排在词条墙第一位；
+  /// * 不属于搜索历史 —— 删除模式下没有 ✕，「清空」也不会清掉它；
+  /// * 主色淡底 + 主色描边 + 图标，与普通词一眼可分。
+  Widget _aggregateChip() {
+    return InkWell(
+      onTap: _openAggregate,
+      borderRadius: BorderRadius.circular(9),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(10, 7, 12, 7),
+        decoration: BoxDecoration(
+          color: AppTheme.accentMutedBg,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: AppTheme.accentBorder, width: 0.8),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.auto_awesome_rounded,
+                size: 13.5, color: AppTheme.accent),
+            const SizedBox(width: 5),
+            Text(
+              '综合阅读',
+              style: TextStyle(
+                fontSize: 13.5,
+                fontWeight: FontWeight.w600,
+                color: AppTheme.accent,
+              ),
+            ),
           ],
         ),
       ),

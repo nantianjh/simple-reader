@@ -2,7 +2,7 @@ name: simple_reader
 description: "Simple阅读 · 个人检索客户端（Flutter / Android）"
 publish_to: 'none'
 
-version: 1.9.9+36
+version: 1.9.9-1+37
 
 environment:
   sdk: ^3.13.3

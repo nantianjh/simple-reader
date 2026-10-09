@@ -869,6 +869,20 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Widget _commentRow(Comment c, {bool compact = false, Comment? parent}) {
+    // 2026-10-09 需求：直接点评论本体 = 回复该条（右侧的回复按钮已移除）。
+    // 行内各有手势的子元素（头像进主页、图片看大图、正文里的链接）会先在
+    // 手势竞技场里获胜，不会误触发回复；点行内其它区域才进入回复。
+    // 作者关闭互动的动态由 [_startReply] 自己拦下（照旧提示一句）。
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => _startReply(c),
+      child: _commentRowBody(c, compact: compact, parent: parent),
+    );
+  }
+
+  /// 评论行的内容本体（由 [_commentRow] 包一层"点击回复"手势）。
+  Widget _commentRowBody(Comment c,
+      {required bool compact, Comment? parent}) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -992,8 +1006,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
     return authorId.isNotEmpty && c.user.id.isNotEmpty && c.user.id == authorId;
   }
 
-  /// 评论行的右缘动作：回复 + 点赞。
+  /// 评论行的右缘动作：点赞。
   ///
+  /// 回复入口已改为「直接点评论本体」（2026-10-09 需求），这里只留点赞。
   /// 点赞数只在**自己的评论**上显示（服务端只对 is_owner=true 下发
   /// votes_count，他人评论拿不到计数——这是用户明确不需要的能力，
   /// 他人评论只渲染"已赞/未赞"状态）。
@@ -1005,19 +1020,6 @@ class _PostDetailPageState extends State<PostDetailPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        InkWell(
-          onTap: () => _startReply(c),
-          borderRadius: BorderRadius.circular(5),
-          child: Padding(
-            padding: const EdgeInsets.all(3),
-            child: Icon(
-              Icons.mode_comment_outlined,
-              size: compact ? 14 : 15,
-              color: AppTheme.inkTertiary,
-            ),
-          ),
-        ),
-        const SizedBox(height: 2),
         InkWell(
           onTap: () async {
             final ok = await toggleCommentVote(context, c);

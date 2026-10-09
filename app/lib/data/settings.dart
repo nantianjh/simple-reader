@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' show ThemeMode;
 
 import 'local_store.dart';
+import 'search_history.dart';
 
 /// 内容缓存的保留期限。
 ///
@@ -70,6 +71,9 @@ class AppSettings extends ChangeNotifier {
   bool _showReadMarkers = true;
   ThemeMode _themeMode = ThemeMode.system;
   List<String> _blockedKeywords = const <String>[];
+
+  /// 「综合阅读」选中的搜索词名单（来源=搜索历史，用户在「我的」里挑选）。
+  List<String> _aggregateKeywords = const <String>[];
   bool _openLinksInApp = true;
   bool _interactionButtonsOnRight = true;
   bool _openPostAtComments = false;
@@ -94,6 +98,9 @@ class AppSettings extends ChangeNotifier {
 
   /// 搜索屏蔽关键词（不可变视图，修改请走 [addBlockedKeyword] 等方法）。
   List<String> get blockedKeywords => List.unmodifiable(_blockedKeywords);
+
+  /// 「综合阅读」选中的搜索词名单（不可变视图，修改请走 [setAggregateKeywords]）。
+  List<String> get aggregateKeywords => List.unmodifiable(_aggregateKeywords);
 
   /// 正文/分享等链接是否默认用应用内 WebView 打开（关闭则回退系统浏览器）。
   bool get openLinksInApp => _openLinksInApp;
@@ -147,6 +154,20 @@ class AppSettings extends ChangeNotifier {
       _blockedKeywords = List<String>.of(
         keywords.whereType<String>().map((e) => e.trim()).where((e) => e.isNotEmpty),
       );
+    }
+    final aggregate = m['aggregateKeywords'];
+    if (aggregate is List) {
+      // 归一化口径与 [setAggregateKeywords] 一致（去空白、去重、同上限）。
+      final seen = <String>{};
+      final next = <String>[];
+      for (final raw in aggregate.whereType<String>()) {
+        final k = raw.trim();
+        if (k.isEmpty) continue;
+        if (!seen.add(k)) continue;
+        next.add(k);
+        if (next.length >= SearchHistory.maxEntries) break;
+      }
+      _aggregateKeywords = next;
     }
     final inApp = m['openLinksInApp'];
     if (inApp is bool) _openLinksInApp = inApp;
@@ -274,6 +295,25 @@ class AppSettings extends ChangeNotifier {
     await _persist();
   }
 
+  /// 设置「综合阅读」的搜索词名单。
+  ///
+  /// 归一化：去空白、去重、上限与搜索历史一致（[SearchHistory.maxEntries]）。
+  Future<void> setAggregateKeywords(List<String> keywords) async {
+    final seen = <String>{};
+    final next = <String>[];
+    for (final raw in keywords) {
+      final k = raw.trim();
+      if (k.isEmpty) continue;
+      if (!seen.add(k)) continue;
+      next.add(k);
+      if (next.length >= SearchHistory.maxEntries) break;
+    }
+    if (listEquals(next, _aggregateKeywords)) return;
+    _aggregateKeywords = next;
+    notifyListeners();
+    await _persist();
+  }
+
   /// 正文是否命中屏蔽词：完整包含任一关键词即命中（大小写不敏感）。
   ///
   /// 「完整匹配」指的是整段关键词原样出现在正文里，不做分词或模糊匹配。
@@ -310,6 +350,7 @@ class AppSettings extends ChangeNotifier {
         'showReadMarkers': _showReadMarkers,
         'themeMode': _storeThemeMode(_themeMode),
         'blockedKeywords': _blockedKeywords,
+        'aggregateKeywords': _aggregateKeywords,
         'openLinksInApp': _openLinksInApp,
         'interactionButtonsOnRight': _interactionButtonsOnRight,
         'openPostAtComments': _openPostAtComments,
