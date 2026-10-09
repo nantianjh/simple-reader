@@ -23,13 +23,19 @@ String _payloadText(Map<String, dynamic> data) => jsonEncode({
     });
 
 void main() {
-  test('导出的完整备份被判为整机快照：六个类别齐全', () {
+  test('导出的完整备份被判为整机快照：七个类别齐全', () {
     final payload = BackupService.parse(_payloadText({
       'settings': <String, dynamic>{'themeMode': 'dark'},
       'searchHistory': <String>['关键词'],
       'readPositions': <String, dynamic>{},
       'favouriteCollections': <String, dynamic>{},
       'voteOverlay': <String, dynamic>{},
+      // 用户备注（1.9.7 新增类别）：导出必须带上它，否则换机后备注全丢。
+      'userRemarks': <String, dynamic>{
+        'items': <String, dynamic>{
+          'u1': <String, dynamic>{'nickname': '张三', 'remark': '同事老王'},
+        },
+      },
       'contentCache': <dynamic>[],
     }));
 
@@ -39,6 +45,7 @@ void main() {
     expect(payload.includedLabels.length, BackupService.sectionLabels.length);
     // 空值也算"这一类要覆盖" —— 判据是字段存在，不是值非空。
     expect(payload.provided, contains('favouriteCollections'));
+    expect(payload.remarkCount, 1);
   });
 
   test('只带 searchHistory 的局部文件：不算快照，且只认这一类', () {

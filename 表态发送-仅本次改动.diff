@@ -1,0 +1,845 @@
+# 「长按点赞按钮送出表态」改动 —— 仅本功能相关
+# 基线 = 主工作树本次改动前的状态（含当时未提交的备注名/按钮顺序/长图等改动，未含取消收藏方案 B）
+# 生成方式：diff -ruN 基线快照 vs 当前 app/lib ；9 个文件（新增 2 个）：vote_states.dart / vote_state_bar.dart
+# 可直接 git apply -p1 应用
+
+diff -ruN /tmp/sr-main-bak/lib/api/simple_api.dart lib/api/simple_api.dart
+--- a/app/lib/api/simple_api.dart	2026-09-23 21:30:17.259529400 +0800
++++ b/app/lib/api/simple_api.dart	2026-09-23 21:30:21.124182600 +0800
+@@ -2,6 +2,7 @@
+ 
+ import '../data/content_cache.dart';
+ import '../data/vote_overlay.dart';
++import '../data/vote_states.dart';
+ import '../util/app_log.dart';
+ import 'api_client.dart';
+ import 'api_config.dart';
+@@ -489,17 +490,47 @@
+     return SimpleUser.fromJson(map);
+   }
+ 
+-  /// 点赞 / 取消点赞。POST 点赞，DELETE 取消。
++  /// 点赞 / 取消点赞 / 带一个具体表态点赞。
++  ///
++  /// 契约来自《点赞状态承载能力-探查报告.md》第一节（逐步读回校验过的矩阵）：
++  ///
++  /// * **点赞走 v3**：`POST api/v3/votes {post_id[, vote_type]}` → 201。
++  ///   必须 v3 —— v2 会**静默忽略** `vote_type`（矩阵第 2 步），你以为送出了
++  ///   "安慰"，服务端记的还是普通赞。
++  /// * **不带 `vote_type` 的 v3 点赞 = 复位成普通赞**（第 5 步）。这一条很
++  ///   重要：服务端取消是"软删"（第 10 步），取消后再点赞会把上一次的状态
++  ///   带回来；只有 v3 不带参数才能真的回到普通赞。
++  /// * **取消仍走 v2**：`DELETE api/v2/votes {post_id}` → 201。实测 v3 建的
++  ///   状态用 v2 删得掉（报告第一节"兼容"条），没必要多一条 v3 路径。
++  /// * `vote_type` 是服务端白名单，非法值 400 且**不改动原状态**。所以
++  ///   [voteType] 只传 [VoteStates.all] 里的 id；[VoteStates.plain] 等同
++  ///   "不传"（那个字面值没实测过，别拿去当参数）。
+   Future<void> vote({
+     required String postId,
+     required bool on,
+     required String token,
++    String? voteType,
+   }) async {
++    if (!on) {
++      await _client.sendJson(
++        'DELETE',
++        '${ApiConfig.apiV2}votes',
++        token: token,
++        body: {'post_id': postId},
++      );
++      return;
++    }
++
++    final state =
++        (voteType == null || voteType == VoteStates.plain) ? null : voteType;
+     await _client.sendJson(
+-      on ? 'POST' : 'DELETE',
+-      '${ApiConfig.apiV2}votes',
++      'POST',
++      '${ApiConfig.apiV3}votes',
+       token: token,
+-      body: {'post_id': postId},
++      body: {
++        'post_id': postId,
++        if (state != null) 'vote_type': state,
++      },
+     );
+   }
+ 
+diff -ruN /tmp/sr-main-bak/lib/data/backup.dart lib/data/backup.dart
+--- a/app/lib/data/backup.dart	2026-09-23 21:30:17.280531500 +0800
++++ b/app/lib/data/backup.dart	2026-09-23 21:30:21.280323300 +0800
+@@ -143,7 +143,7 @@
+ ///     "searchHistory": [ "关键词" ],
+ ///     "readPositions": { "<scope>": { ... } },
+ ///     "favouriteCollections": { "items": { ... }, "removed": [ ... ] },
+-///     "voteOverlay": { "posts": { }, "comments": { } },
++///     "voteOverlay": { "posts": { "<postId>": "comfort" }, "comments": { "<commentId>": true } },
+ ///     "userRemarks": { "items": { "<userId>": { "nickname": "本名", "remark": "备注名", "updatedAt": 0 } } },
+ ///     "contentCache": [ { "sig": "...", "savedAt": 0, "rows": [ ... ] } ]
+ ///   }
+@@ -153,6 +153,10 @@
+ /// **不含访问凭证**：token 是本机私有凭证，不写进任何可导出文件（与本工程
+ /// 「凭证不外传」的约定一致）；换端后重新登录即可。
+ ///
++/// `voteOverlay.posts` 的值是**表态 id**（`"unknown"` = 普通赞；可送出的那
++/// 几种见 `vote_states.dart`），评论侧仍是 bool。1.9.6 及以前动态侧存的是
++/// `true`/`false`，旧备份/旧落盘数据照样读得进来（见 `VoteOverlay`）。
++///
+ /// **局部导入（2026-09-22）**：判据是 `data` 里**字段存不存在**，不是值空不空 ——
+ /// 导出的备份七个字段齐全 ⇒ 语义仍是"整机快照覆盖"；手写的局部文件（例如
+ /// 只带 `searchHistory` 的搜索词范本）⇒ 只写它带的类别，其余类别不动本机数据。
+diff -ruN /tmp/sr-main-bak/lib/data/changelog.dart lib/data/changelog.dart
+--- a/app/lib/data/changelog.dart	2026-09-23 21:30:17.284335200 +0800
++++ b/app/lib/data/changelog.dart	2026-09-23 21:30:21.360601000 +0800
+@@ -59,6 +59,9 @@
+         '他人主页右上角新增「备注」：给某人起个本机叫法后，'
+             '列表、详情、评论等处都显示「本名（备注名）」，'
+             '导出备份时备注会一起带走。',
++        '长按「点赞」按钮可以送出具体态度（理解、支持、加油、安慰、祝福、'
++            '共鸣、陪伴、温暖、看见、感谢），选中即送出，'
++            '按钮上会显示你送出的那一种。',
+       ],
+     ),
+     ReleaseNote(
+diff -ruN /tmp/sr-main-bak/lib/data/vote_overlay.dart lib/data/vote_overlay.dart
+--- a/app/lib/data/vote_overlay.dart	2026-09-23 21:30:17.278024300 +0800
++++ b/app/lib/data/vote_overlay.dart	2026-09-23 21:30:21.199594200 +0800
+@@ -3,6 +3,7 @@
+ import '../api/models.dart';
+ import '../platform/native_bridge.dart';
+ import '../util/app_log.dart';
++import 'vote_states.dart';
+ 
+ /// 本地点赞状态覆盖层（动态 + 评论）。
+ ///
+@@ -20,6 +21,12 @@
+ /// * **网络数据**：做对账。服务端是最终真相，若与覆盖层冲突（例如
+ ///   在网页端取消过赞），以服务端为准并移除覆盖层里的旧值，
+ ///   避免覆盖层与真实状态永久分叉。
++///
++/// **表态**（`vote_type`，1.9.7 新增）：动态侧的值不再是一个 bool，而是
++/// **表态 id**（见 [VoteStates]）—— 这样长按点赞按钮送出态度之后，卡片能
++/// 把那个态度回显在按钮上。为什么只能本机记：动态对象只暴露 `is_voted`
++/// 布尔，读侧拿不到"我这条是什么状态"（详见 `vote_states.dart`）。
++/// 对账口径没变，**只对到"赞没赞"这一层** —— 态度本身无法与服务端核对。
+ class VoteOverlay {
+   VoteOverlay._();
+ 
+@@ -30,10 +37,17 @@
+   /// public：数据备份导出/导入需要按同一键名读写原始 JSON。
+   static const String kvKey = 'simple_vote_overlay';
+ 
+-  /// postId → 最终点赞态。
+-  final Map<String, bool> _posts = {};
++  /// postId → 最终表态（`vote_type`；[VoteStates.plain] = 普通赞）。
++  ///
++  /// 语义：**有键 = 已赞**，值是那条赞带的态度。
++  /// 1.9.6 及以前这里是 `Map<String, bool>`，读取时兼容迁移（见
++  /// [_absorbPosts]）。
++  final Map<String, String> _posts = {};
+ 
+   /// commentId → 最终点赞态（主楼与回复楼层同一 id 空间）。
++  ///
++  /// 评论侧仍是二值：`v2|v3/comment_votes` **没有读接口**（405），
++  /// 带 `vote_type` 虽然返回 201 却无从读回校验，所以不冒这个险。
+   final Map<String, bool> _comments = {};
+ 
+   bool _loaded = false;
+@@ -51,8 +65,8 @@
+       if (raw != null && raw.isNotEmpty) {
+         final decoded = jsonDecode(raw);
+         if (decoded is Map) {
+-          _absorb(decoded['posts'], _posts);
+-          _absorb(decoded['comments'], _comments);
++          _absorbPosts(decoded['posts'], _posts);
++          _absorbComments(decoded['comments'], _comments);
+         }
+       }
+     } catch (e) {
+@@ -64,7 +78,25 @@
+     }
+   }
+ 
+-  static void _absorb(dynamic raw, Map<String, bool> into) {
++  /// 动态侧：值是表态 id。旧版本存的是 bool（`true` = 普通赞；
++  /// `false` 只说明"当时没赞"，没有信息量，直接丢）。
++  static void _absorbPosts(dynamic raw, Map<String, String> into) {
++    if (raw is! Map) return;
++    raw.forEach((k, v) {
++      final id = k.toString();
++      if (id.isEmpty) return;
++      if (v is bool) {
++        if (v) into[id] = VoteStates.plain;
++        return;
++      }
++      final value = v?.toString() ?? '';
++      if (value.isEmpty) return;
++      into[id] = value;
++    });
++  }
++
++  /// 评论侧：值仍是 bool。
++  static void _absorbComments(dynamic raw, Map<String, bool> into) {
+     if (raw is! Map) return;
+     raw.forEach((k, v) {
+       final id = k.toString();
+@@ -97,11 +129,19 @@
+   }
+ 
+   /// 动态点赞成功后的记录（最终态，不是"点了一下"）。
+-  Future<void> recordPost(String postId, {required bool voted}) async {
++  ///
++  /// [voteType] 传具体表态（[VoteStates.all] 里的 id）= 带态度的赞，
++  /// 传 [VoteStates.plain] = 普通赞，传 null = **未赞**（取消，记录删掉）。
++  Future<void> recordPost(String postId, {String? voteType}) async {
+     if (postId.isEmpty) return;
+     await _ensureLoaded();
+-    if (_posts[postId] == voted) return;
+-    _posts[postId] = voted;
++    if (voteType == null) {
++      if (_posts.remove(postId) == null) return;
++      await _persist();
++      return;
++    }
++    if (_posts[postId] == voteType) return;
++    _posts[postId] = voteType;
+     await _persist();
+   }
+ 
+@@ -114,6 +154,17 @@
+     await _persist();
+   }
+ 
++  // ---------------------------------------------------------------- 读取
++
++  /// 我这条动态送出的表态（普通赞、没记录都返回 null）。
++  ///
++  /// **同步**纯内存读，给卡片按钮回显用：覆盖层在内容解析阶段
++  /// （[syncPosts]）就已载入，卡片渲染时拿得到。
++  String? postVoteType(String postId) => _posts[postId];
++
++  /// 我这条动态是否处于已赞态（覆盖层口径）。
++  bool isPostVoted(String postId) => _posts.containsKey(postId);
++
+   // ---------------------------------------------------------------- 同步
+ 
+   /// 解析出一批动态后调用。
+@@ -126,11 +177,10 @@
+     if (_posts.isEmpty) return;
+     var dropped = false;
+     for (final p in posts) {
+-      final o = _posts[p.id];
+-      if (o == null) continue;
++      if (!_posts.containsKey(p.id)) continue;
+       if (fromCache) {
+-        if (p.isVoted != o) p.isVoted = o;
+-      } else if (p.isVoted != o) {
++        if (!p.isVoted) p.isVoted = true;
++      } else if (!p.isVoted) {
+         // 网络真相与本地记录冲突：以服务端为准，移除旧记录。
+         _posts.remove(p.id);
+         dropped = true;
+diff -ruN /tmp/sr-main-bak/lib/data/vote_states.dart lib/data/vote_states.dart
+--- a/app/lib/data/vote_states.dart	1970-01-01 08:00:00.000000000 +0800
++++ b/app/lib/data/vote_states.dart	2026-09-23 21:30:21.041076600 +0800
+@@ -0,0 +1,90 @@
++/// 点赞「表态」状态表 —— 点赞可以带一个具体态度，服务端叫 `vote_type`。
++///
++/// 依据《点赞状态承载能力-探查报告.md》（2026-09-22 实测）：
++///
++/// * 只有 `POST api/v3/votes` 认 `vote_type`；`api/v2/votes` 会**静默丢弃**
++///   这个字段（写入矩阵第 2 步）—— 这是最容易踩的坑。
++/// * `vote_type` 是**服务端白名单**，非法值 400
++///   `{"error":"vote_type does not have a valid value"}`，且**不改动已有状态**；
++///   大小写与空格敏感。
++/// * 那句带表情的文案（"🫂轻轻安慰了你"）由**服务端下发**
++///   （`vote_type_name`），客户端包里搜不到 —— 所以下面这张表是本机维护的
++///   **副本**，不是权威来源。
++///
++/// 维护约定：
++///
++/// * [VoteState.id] 必须与实测过的服务端值**逐字一致**（大小写、空格都敏感）；
++/// * 表里没有的值不要猜：服务端可能增删。收到 400 就当"这个状态暂时送不
++///   出去"提示，**不要**退化成普通赞（退化了用户看不出自己送错了什么）；
++/// * 读侧拿不到"我这条是什么状态"（动态对象只暴露 `is_voted` 布尔），要显示
++///   得每帖多发一个请求翻 `v3/votes` 列表，代价不值 —— 本机只记自己刚送出的
++///   那个（见 `VoteOverlay`），因此表里的 [VoteState.short] 是按钮回显要用的
++///   短名，服务端文案太长塞不进按钮。
++library;
++
++/// 一个可送出的表态。
++class VoteState {
++  const VoteState({
++    required this.id,
++    required this.emoji,
++    required this.text,
++    required this.short,
++  });
++
++  /// 写入用的 `vote_type` 原值。
++  final String id;
++
++  /// 服务端下发文案里的表情符号。
++  final String emoji;
++
++  /// 服务端下发文案去掉表情后的部分（照抄，不润色）。
++  final String text;
++
++  /// 按钮上回显用的短名（服务端文案太长）。
++  final String short;
++
++  /// 服务端下发的那整句文案，例如 `🫂轻轻安慰了你`。
++  String get caption => '$emoji$text';
++}
++
++/// 可选表态全集与查询。
++class VoteStates {
++  VoteStates._();
++
++  /// 默认态：普通赞。点赞但没带态度时服务端记的就是它。
++  ///
++  /// ⚠️ 它不是"可选状态"，别当参数往外传（白名单里未必有这个字面值）。
++  /// 要回到普通赞就是不传 `vote_type` —— 实测 `POST v3/votes` 不带参数会
++  /// **复位**成默认态（写入矩阵第 5 步）。
++  static const String plain = 'unknown';
++
++  /// 可送出的表态。顺序即展示顺序。
++  ///
++  /// 不含 [plain]；也不含 `laugh`（😂被你逗笑了）—— 本机刻意不做这个入口。
++  static const List<VoteState> all = [
++    VoteState(
++        id: 'understanding', emoji: '🤝', text: '表示理解你的感受', short: '理解'),
++    VoteState(id: 'support', emoji: '🌱', text: '向你表达了支持', short: '支持'),
++    VoteState(
++        id: 'encouragement', emoji: '💪', text: '给你加油鼓劲了', short: '加油'),
++    VoteState(id: 'comfort', emoji: '🫂', text: '轻轻安慰了你', short: '安慰'),
++    VoteState(id: 'blessing', emoji: '🌤️', text: '向你表达了祝福', short: '祝福'),
++    VoteState(id: 'resonance', emoji: '🤍', text: '共鸣了你的动态', short: '共鸣'),
++    VoteState(id: 'accompany', emoji: '🌙', text: '正在静静陪伴你', short: '陪伴'),
++    VoteState(id: 'warmth', emoji: '🌸', text: '被你温暖了', short: '温暖'),
++    VoteState(id: 'see', emoji: '✨', text: '看见了你的表达', short: '看见'),
++    VoteState(id: 'gratitude', emoji: '💐', text: '谢谢了你', short: '感谢'),
++  ];
++
++  /// 按 `vote_type` 找表态。
++  ///
++  /// 默认态 [plain]、空值、表外的值一律返回 null —— 调用方按"没有态度
++  /// （普通赞）"处理即可，不需要自己判空字符串。
++  static VoteState? byId(String? id) {
++    if (id == null || id.isEmpty || id == plain) return null;
++    for (final s in all) {
++      if (s.id == id) return s;
++    }
++    return null;
++  }
++}
+diff -ruN /tmp/sr-main-bak/lib/ui/actions.dart lib/ui/actions.dart
+--- a/app/lib/ui/actions.dart	2026-09-23 21:30:17.332768200 +0800
++++ b/app/lib/ui/actions.dart	2026-09-23 21:30:29.192033500 +0800
+@@ -6,6 +6,7 @@
+ import '../api/simple_api.dart';
+ import '../data/settings.dart';
+ import '../data/vote_overlay.dart';
++import '../data/vote_states.dart';
+ import '../platform/native_bridge.dart';
+ import '../state/app_scope.dart';
+ import '../util/app_log.dart';
+@@ -17,9 +18,14 @@
+ /// 点赞 / 收藏 / 评论都是"先乐观更新、失败回滚"的模式，
+ /// 抽到这里避免在多个页面重复。
+ 
+-/// 点赞 / 取消点赞。
++/// 点赞 / 取消点赞（**普通赞**，不带态度）。
+ ///
+ /// [post] 的 [Post.isVoted] 会被就地更新，返回是否操作成功。
++/// 要送出一个具体态度（长按点赞按钮）走 [sendVoteState]。
++///
++/// 取消会把态度一起取消（`DELETE` 删的是同一条记录）；普通点赞则**复位**
++/// 成默认态 —— 服务端取消是软删，不带参数直接再赞会把上一次的态度带回来，
++/// 所以点赞走 `POST v3/votes` 且不带 `vote_type`（详见 `SimpleApi.vote`）。
+ Future<bool> toggleVote(BuildContext context, Post post) async {
+   final app = AppScope.read(context);
+   final token = app.token;
+@@ -33,7 +39,11 @@
+     await SimpleApi().vote(postId: post.id, on: target, token: token);
+     // 记入本地点赞覆盖层：内容缓存里的 is_voted 还是旧值，
+     // 缓存续读解析时要靠这层把点赞态补回来。
+-    await VoteOverlay.instance.recordPost(post.id, voted: target);
++    // 取消传 null（记录删掉）、点赞传默认态（覆盖层要区分"有态度"）。
++    await VoteOverlay.instance.recordPost(
++      post.id,
++      voteType: target ? VoteStates.plain : null,
++    );
+     log.i(LogTag.ui, '${target ? '点赞' : '取消点赞'}成功：${post.id}');
+     return true;
+   } on ApiException catch (e) {
+@@ -52,6 +62,63 @@
+     if (context.mounted) _toast(context, '操作失败：$e');
+     return false;
+   }
++}
++
++/// 给动态送出一个具体态度（长按点赞按钮选的那个）。
++///
++/// 与 [toggleVote] 的区别：这里**不做取反**，语义就是"送出这个态度"——
++/// 已赞的帖子再送一次 = 换个态度，没赞过的帖子送 = 带着态度赞一下
++/// （服务端两种都收，见报告写入矩阵第 6、9 步）。
++///
++/// 注意两件事：
++/// * 服务端**不认**白名单外的值（400 且不改动原状态），所以传进来的
++///   [voteType] 先过一遍 [VoteStates.byId]，表里没有的直接不发；
++/// * 读侧拿不到"我这条是什么态度"，本机的回显只认覆盖层里记下的这一个
++///   （别的设备 / 官方 App 改过就不知道了）。
++///
++/// 返回是否成功。[post] 的 [Post.isVoted] 会被就地更新（乐观、失败回滚）。
++Future<bool> sendVoteState(
++  BuildContext context,
++  Post post,
++  String voteType,
++) async {
++  final state = VoteStates.byId(voteType);
++  if (state == null) return false;
++
++  final app = AppScope.read(context);
++  final token = app.token;
++  if (token == null || token.isEmpty) return false;
++
++  final previousVoted = post.isVoted;
++  post.isVoted = true; // 乐观更新：送出态度必然是已赞态
++
++  try {
++    await SimpleApi()
++        .vote(postId: post.id, on: true, token: token, voteType: state.id);
++    await VoteOverlay.instance.recordPost(post.id, voteType: state.id);
++    log.i(LogTag.ui, '送出态度成功：${post.id}｜${state.id}');
++    // 送出成功**不弹提示**：结果就回显在按钮上（表情 + 短名），
++    // 弹一条 toast 反而打断浏览。失败照旧提示 —— 静默失败更糟。
++    return true;
++  } on ApiException catch (e) {
++    post.isVoted = previousVoted; // 回滚
++    log.w(LogTag.ui, '送出态度失败：${post.id}｜${state.id}｜${e.message}');
++    if (!context.mounted) return false;
++    if (e.requiresReauth) {
++      app.markUnauthorized(e.message);
++    } else if (e.statusCode == 400) {
++      // 白名单是服务端说了算：我们的表可能过期了（服务端删过值）。
++      _toast(context, '这个态度服务端不认了，先换一个吧');
++    } else {
++      _toast(context, e.message);
++    }
++    return false;
++  } catch (e, st) {
++    post.isVoted = previousVoted;
++    log.exception(LogTag.ui, '送出态度异常：${post.id}｜${state.id}', e, st);
++    if (context.mounted) _toast(context, '操作失败：$e');
++    return false;
++  }
+ }
+ 
+ /// 收藏 / 取消收藏。
+diff -ruN /tmp/sr-main-bak/lib/ui/post_detail_page.dart lib/ui/post_detail_page.dart
+--- a/app/lib/ui/post_detail_page.dart	2026-09-23 21:30:17.413230400 +0800
++++ b/app/lib/ui/post_detail_page.dart	2026-09-23 21:32:06.432989300 +0800
+@@ -7,6 +7,8 @@
+ import '../api/models.dart';
+ import '../api/simple_api.dart';
+ import '../data/user_remarks.dart';
++import '../data/vote_overlay.dart';
++import '../data/vote_states.dart';
+ import '../state/app_scope.dart';
+ import '../util/format.dart';
+ import 'actions.dart';
+@@ -22,6 +24,7 @@
+ import 'widgets/remark_name.dart';
+ import 'widgets/state_views.dart';
+ import 'widgets/user_avatar.dart';
++import 'widgets/vote_state_bar.dart';
+ 
+ /// 内容详情页：完整正文 + 媒体 + 评论区。
+ class PostDetailPage extends StatefulWidget {
+@@ -58,6 +61,12 @@
+   /// 表情面板展开态。输入框获得焦点时自动收起（与键盘互斥）。
+   bool _emojiPanelOpen = false;
+ 
++  /// 表态条展开态（长按点赞按钮开关）。
++  ///
++  /// 与卡片里的表态条同一个组件、同一套做法：在位展开一条，不用弹层
++  /// （见 `widgets/vote_state_bar.dart`）。
++  bool _voteBarOpen = false;
++
+   /// 已展开到全量的回复（key = 主评论 id）。
+   /// preview_replies 通常只有 3 条，点「查看全部回复」后从
+   /// `comments/replies` 端点分页拉取，替换展示列表。
+@@ -440,15 +449,21 @@
+                 icon: post.isVoted
+                     ? Icons.favorite_rounded
+                     : Icons.favorite_border_rounded,
+-                label: post.votesCount == null
+-                    ? (post.isVoted ? '已赞' : '点赞')
+-                    : '${compactCount(post.votesCount!)} 赞',
++                // 送过态度就以那个态度的表情 + 短名回显（与卡片按钮同一口径）。
++                emoji: _voteState?.emoji,
++                label: _voteState?.short ??
++                    (post.votesCount == null
++                        ? (post.isVoted ? '已赞' : '点赞')
++                        : '${compactCount(post.votesCount!)} 赞'),
+                 active: post.isVoted,
+                 activeColor: AppTheme.likeColor,
+                 onTap: () async {
+                   final ok = await toggleVote(context, post);
+                   if (ok && mounted) setState(() {});
+                 },
++                // 长按在位展开表态条：选中才送出，长按本身不动点赞态。
++                onLongPress: () =>
++                    setState(() => _voteBarOpen = !_voteBarOpen),
+               ),
+               const SizedBox(width: 8),
+               _actionChip(
+@@ -465,22 +480,53 @@
+               ),
+             ],
+           ),
++          // 表态条：就在操作行下方摊开（与卡片里同一个组件、同一套做法）。
++          if (_voteBarOpen) ...[
++            const SizedBox(height: 8),
++            VoteStateBar(
++              current: VoteOverlay.instance.postVoteType(widget.post.id),
++              onPick: _sendVoteState,
++            ),
++          ],
+         ],
+       ),
+     );
+   }
+ 
++  /// 我这条动态送出的态度（普通赞 / 没送过为 null）。
++  ///
++  /// 读的是本机覆盖层：服务端只把 `is_voted` 布尔放进动态对象，
++  /// "我这条是什么状态"读不回来（详见 `data/vote_states.dart`）。
++  VoteState? get _voteState =>
++      VoteStates.byId(VoteOverlay.instance.postVoteType(widget.post.id));
++
++  /// 选中一个表态：先收起条，再送出。
++  ///
++  /// 与卡片里的同名校验口径一致：成功不弹提示，按钮上的回显就是反馈
++  /// （见 [sendVoteState]）。
++  Future<void> _sendVoteState(String voteType) async {
++    if (_voteBarOpen) setState(() => _voteBarOpen = false);
++    final ok = await sendVoteState(context, widget.post, voteType);
++    if (ok && mounted) setState(() {});
++  }
++
++  /// 正文下方的一个操作按钮。
++  ///
++  /// [emoji] 传了就替掉图标 —— 点赞按钮用它回显"我送出的态度"。
+   Widget _actionChip({
+     required IconData icon,
+     required String label,
+     required bool active,
+     Color? activeColor,
++    String? emoji,
+     required VoidCallback onTap,
++    VoidCallback? onLongPress,
+   }) {
+     final ac = activeColor ?? AppTheme.accent;
+     final color = active ? ac : AppTheme.inkSecondary;
+     return InkWell(
+       onTap: onTap,
++      onLongPress: onLongPress,
+       borderRadius: BorderRadius.circular(8),
+       child: Container(
+         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+@@ -493,7 +539,10 @@
+         child: Row(
+           mainAxisSize: MainAxisSize.min,
+           children: [
+-            Icon(icon, size: 16, color: color),
++            if (emoji != null)
++              Text(emoji, style: const TextStyle(fontSize: 15, height: 1.1))
++            else
++              Icon(icon, size: 16, color: color),
+             const SizedBox(width: 5),
+             Text(
+               label,
+diff -ruN /tmp/sr-main-bak/lib/ui/widgets/post_card.dart lib/ui/widgets/post_card.dart
+--- a/app/lib/ui/widgets/post_card.dart	2026-09-23 21:30:17.384351400 +0800
++++ b/app/lib/ui/widgets/post_card.dart	2026-09-23 21:33:16.252508300 +0800
+@@ -5,6 +5,8 @@
+ import '../../api/models.dart';
+ import '../../api/simple_api.dart';
+ import '../../data/settings.dart';
++import '../../data/vote_overlay.dart';
++import '../../data/vote_states.dart';
+ import '../../state/app_scope.dart';
+ import '../../util/app_log.dart';
+ import '../../util/format.dart';
+@@ -19,6 +21,7 @@
+ import 'pending_emoji_strip.dart';
+ import 'remark_name.dart';
+ import 'user_avatar.dart';
++import 'vote_state_bar.dart';
+ 
+ /// 内容帖卡片。
+ ///
+@@ -37,6 +40,13 @@
+ /// 点「评论」按钮会在卡片下方**原位展开快捷评论条**（不进详情页，
+ /// 网页微博式）：输入 + 表情随评，发送走与详情页同一套评论接口。
+ ///
++/// 长按「点赞」按钮在**同一个位置**展开一条**表态条**（理解 / 支持 /
++/// 加油 / 安慰 …），选中即送出，并把那个态度回显在按钮上 —— 官方 App 里
++/// 那条"可扩展点赞条"在本机的对应物（可送出的状态表见
++/// `data/vote_states.dart`）。形态刻意与快捷评论条同构：不用弹层、不用
++/// Overlay，高度变化照旧走 [PagedPostListAnchor] 锚定，不引入第二种
++/// 定位机制。
++///
+ /// 高度变化会让 `ListView` 里下方内容整体位移（观感是"画面猛地一跳"），
+ /// 因此每次改变自身高度前都会通过 [PagedPostListAnchor] 请列表记下锚点，
+ /// 布局完成后再把锚点放回原位 —— 这也是"跳跃"类问题的日志来源。
+@@ -96,6 +106,14 @@
+ 
+   Post get post => widget.post;
+ 
++  // ------------------------------------------------------------ 内联表态条
++
++  /// 表态条展开态（长按点赞按钮开关）。
++  ///
++  /// 与快捷评论条**互斥**：两条同时摊开会让卡片一下子高出一大截，在这套
++  /// 对高度变化敏感的列表里不划算 —— 展开一条就收起另一条。
++  bool _voteBarOpen = false;
++
+   // ------------------------------------------------------------ 内联评论条
+ 
+   /// 快捷评论条展开态（feed 内不进详情直接评论，网页微博式）。
+@@ -164,6 +182,40 @@
+     setState(() => _collapsed = value);
+   }
+ 
++  // ---------------------------------------------------------- 内联表态交互
++
++  /// 长按点赞按钮：原位展开 / 收起表态条。
++  ///
++  /// 长按本身**不动点赞态** —— 真送出发生在选中一项之后（[_sendVoteState]），
++  /// 所以展开又收起不会留下任何痕迹。高度变化照旧先锚定（与评论条同一套）。
++  void _toggleVoteBar() {
++    final willOpen = !_voteBarOpen;
++    _anchorHeightChange(!willOpen);
++    log.d(LogTag.ui, '${willOpen ? '展开' : '收起'}表态条：${post.id}');
++    setState(() {
++      _voteBarOpen = willOpen;
++      if (willOpen && _composerOpen) {
++        // 与评论条互斥（见 [_voteBarOpen] 的说明）。
++        _composerOpen = false;
++        _composerEmojiOpen = false;
++        _composerFocus.unfocus();
++      }
++    });
++  }
++
++  /// 选中一个表态：先收起条，再送出。
++  ///
++  /// 先收再送：成功不会弹提示，按钮上的回显（表情 + 短名）就是反馈，
++  /// 条没必要赖在卡片里；失败了也不重开 —— 错误提示会说明原因
++  /// （见 [sendVoteState]）。
++  Future<void> _sendVoteState(String voteType) async {
++    if (_voteBarOpen) _toggleVoteBar();
++    final ok = await sendVoteState(context, post, voteType);
++    // 父级（列表页）不一定订阅了覆盖层，这里自己重建一次把按钮上的
++    // 态度回显刷新出来。
++    if (ok && mounted) setState(() {});
++  }
++
+   // -------------------------------------------------------- 内联评论交互
+ 
+   /// 展开 / 收起快捷评论条。展开时自动聚焦输入框（下一帧，让键盘顶起时
+@@ -174,6 +226,8 @@
+     log.d(LogTag.ui, '${willOpen ? '展开' : '收起'}内联评论条：${post.id}');
+     setState(() {
+       _composerOpen = willOpen;
++      // 与表态条互斥（见 [_voteBarOpen] 的说明）。
++      if (willOpen) _voteBarOpen = false;
+       if (!willOpen) {
+         _composerEmojiOpen = false;
+         _composerFocus.unfocus();
+@@ -459,6 +513,13 @@
+                   const SizedBox(height: 7),
+                   _actions(showExpand: overflows || _textExpanded),
+                 ],
++                // 表态条：紧贴按钮栏下方原位展开（长按点赞按钮开关）。
++                // 与快捷评论条同构、互斥，见 _toggleVoteBar。
++                if (_voteBarOpen)
++                  VoteStateBar(
++                    current: VoteOverlay.instance.postVoteType(post.id),
++                    onPick: _sendVoteState,
++                  ),
+                 // 快捷评论条：展开/收起都走锚定（见 _toggleComposer），
+                 // 放在按钮栏之后，属于卡片自身的高度变化。
+                 if (_composerOpen) _inlineComposer(),
+@@ -820,6 +881,10 @@
+     final faved = widget.isFavourite ?? post.isFavourited;
+     final votes = post.votesCount;
+     final comments = post.commentsCount + _sentComments;
++    // 我送出的态度（普通赞 / 没送过为 null）。读的是本机覆盖层：服务端
++    // 把"我这条是什么状态"藏起来了，详见 `data/vote_states.dart`。
++    final voteState =
++        VoteStates.byId(VoteOverlay.instance.postVoteType(post.id));
+ 
+     // 互动组：收藏 / 评论 / 点赞。
+     //
+@@ -851,10 +916,16 @@
+       const SizedBox(width: 4),
+       _actionItem(
+         icon: voted ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+-        label: votes == null ? '赞' : compactCount(votes),
++        // 送过态度就以那个态度的表情 + 短名回显（服务端那句文案太长，
++        // 塞不进按钮；完整文案见展开条上的长按提示）。
++        emoji: voteState?.emoji,
++        label:
++            voteState?.short ?? (votes == null ? '赞' : compactCount(votes)),
+         active: voted,
+         activeColor: AppTheme.likeColor,
+         onTap: widget.onVote == null ? null : () => widget.onVote!(!voted),
++        // 长按原位展开表态条。没接点赞回调的场景（只读卡片）不长按。
++        onLongPress: widget.onVote == null ? null : _toggleVoteBar,
+       ),
+     ];
+ 
+@@ -892,24 +963,34 @@
+     );
+   }
+ 
++  /// 按钮栏里的一个按钮。
++  ///
++  /// [emoji] 传了就替掉图标 —— 点赞按钮用它回显"我送出的态度"
++  /// （表情比一个心形更能说明"这条不是普通赞"）。
+   Widget _actionItem({
+     required IconData icon,
+     required String label,
+     required bool active,
+     Color? activeColor,
++    String? emoji,
+     VoidCallback? onTap,
++    VoidCallback? onLongPress,
+   }) {
+     final ac = activeColor ?? AppTheme.accent;
+     final color = active ? ac : AppTheme.inkTertiary;
+     return InkWell(
+       onTap: onTap,
++      onLongPress: onLongPress,
+       borderRadius: BorderRadius.circular(6),
+       child: Padding(
+         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+         child: Row(
+           mainAxisSize: MainAxisSize.min,
+           children: [
+-            Icon(icon, size: 17, color: color),
++            if (emoji != null)
++              Text(emoji, style: const TextStyle(fontSize: 15, height: 1.1))
++            else
++              Icon(icon, size: 17, color: color),
+             const SizedBox(width: 4),
+             Text(
+               label,
+diff -ruN /tmp/sr-main-bak/lib/ui/widgets/vote_state_bar.dart lib/ui/widgets/vote_state_bar.dart
+--- a/app/lib/ui/widgets/vote_state_bar.dart	1970-01-01 08:00:00.000000000 +0800
++++ b/app/lib/ui/widgets/vote_state_bar.dart	2026-09-23 21:32:22.624934800 +0800
+@@ -0,0 +1,99 @@
++import 'package:flutter/material.dart';
++
++import '../../data/vote_states.dart';
++import '../theme.dart';
++
++/// 点赞按钮下方**原位展开**的表态条（长按点赞按钮开关）。
++///
++/// 形态刻意做成"快捷评论条"的同构件（见 `post_card.dart` 的
++/// `_composerOpen` / `_inlineComposer`）：卡片自己摊开一条、展开前先走
++/// 列表锚点，本组件只负责**画这一条**并把选中结果回调出去 ——
++/// **不做网络、不弹层、不碰 Overlay、不带展开动画**。这是本工程里已经跑
++/// 通的那套高度变化处理方式，不引入第二种定位机制，风险最小。
++///
++/// 每一项都是**会真实发出去的状态**：文案用服务端下发的那句原话
++/// （长按某一项可以看到完整的一句，如 `🫂轻轻安慰了你`；条上空间只放
++/// 短名）。可送出的状态表见 `data/vote_states.dart`，本机不润色、不猜值。
++class VoteStateBar extends StatelessWidget {
++  const VoteStateBar({
++    super.key,
++    required this.current,
++    required this.onPick,
++  });
++
++  /// 我这条动态当前送出的表态 id（普通赞 / 没送过为 null）。
++  final String? current;
++
++  /// 点某一项：把它的 `vote_type` 交出去（发送交给 `sendVoteState`）。
++  final ValueChanged<String> onPick;
++
++  /// 条高：一行胶囊，尽量矮 —— 卡片高度变化越小，列表越好收尾。
++  static const double height = 34;
++
++  @override
++  Widget build(BuildContext context) {
++    return SizedBox(
++      // 宽度显式撑满：条挂在 Column 里（交叉轴是 loose 约束），
++      // 不写死会出现"条自己缩到内容宽度"的对齐意外。
++      width: double.infinity,
++      height: height + 7,
++      child: Padding(
++        padding: const EdgeInsets.only(top: 7),
++        child: ListView.separated(
++          scrollDirection: Axis.horizontal,
++          // 不吸附、不回弹：这排就是横向看全十个，不做花活。
++          physics: const ClampingScrollPhysics(),
++          itemCount: VoteStates.all.length,
++          separatorBuilder: (_, __) => const SizedBox(width: 6),
++          itemBuilder: (_, i) {
++            final s = VoteStates.all[i];
++            return _chip(s, selected: s.id == current);
++          },
++        ),
++      ),
++    );
++  }
++
++  Widget _chip(VoteState s, {required bool selected}) {
++    final color = selected ? AppTheme.likeColor : AppTheme.inkSecondary;
++    return Tooltip(
++      // 完整文案（服务端那句）；手机上长按胶囊即见。
++      message: s.caption,
++      waitDuration: const Duration(milliseconds: 400),
++      child: InkWell(
++        onTap: () => onPick(s.id),
++        borderRadius: BorderRadius.circular(height / 2),
++        child: Container(
++          padding: const EdgeInsets.symmetric(horizontal: 11),
++          alignment: Alignment.center,
++          decoration: BoxDecoration(
++            color: selected
++                ? AppTheme.likeColor.withValues(alpha: 0.10)
++                : AppTheme.surfaceMuted,
++            borderRadius: BorderRadius.circular(height / 2),
++            border: Border.all(
++              color: selected
++                  ? AppTheme.likeColor.withValues(alpha: 0.45)
++                  : AppTheme.divider,
++            ),
++          ),
++          child: Row(
++            mainAxisSize: MainAxisSize.min,
++            children: [
++              Text(s.emoji, style: const TextStyle(fontSize: 14, height: 1.0)),
++              const SizedBox(width: 4),
++              Text(
++                s.short,
++                style: TextStyle(
++                  fontSize: 12.5,
++                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
++                  color: color,
++                ),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}

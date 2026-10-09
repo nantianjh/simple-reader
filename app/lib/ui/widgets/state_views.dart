@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../util/format.dart';
 import '../theme.dart';
 import 'brightness_aware.dart';
 
@@ -143,6 +144,53 @@ class ErrorView extends StatelessWidget {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 列表内容来自本地缓存时的提示条。
+///
+/// 搜索 / 收藏 / 个人主页三个分页列表共用同一份文案：用户需要一眼看出
+/// "现在看的是抓过的旧内容、还是刚从网络拿的"（并知道自己可以下拉刷新）。
+class CacheHintBar extends StatelessWidget {
+  const CacheHintBar({
+    super.key,
+    required this.cachedAt,
+    this.trailing = '下拉可刷新',
+  });
+
+  /// 缓存抓取时间。
+  final DateTime cachedAt;
+
+  /// 右端提示语，传空串则不显示。
+  final String trailing;
+
+  @override
+  Widget build(BuildContext context) =>
+      BrightnessAware(builder: (context, _) => _contents());
+
+  Widget _contents() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 7, 14, 7),
+      color: AppTheme.infoBackground,
+      child: Row(
+        children: [
+          Icon(Icons.offline_bolt_outlined, size: 13, color: AppTheme.accent),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '内容来自本地缓存（抓取于 ${timeAgo(cachedAt)}）',
+              style: TextStyle(fontSize: 11.5, color: AppTheme.accent),
+            ),
+          ),
+          if (trailing.isNotEmpty)
+            Text(
+              trailing,
+              style: TextStyle(fontSize: 11, color: AppTheme.inkTertiary),
+            ),
+        ],
       ),
     );
   }

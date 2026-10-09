@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../api/models.dart';
 import '../platform/native_bridge.dart';
 import '../util/app_log.dart';
+import 'vote_states.dart';
 
 /// 本地点赞状态覆盖层（动态 + 评论）。
 ///
@@ -20,6 +21,12 @@ import '../util/app_log.dart';
 /// * **网络数据**：做对账。服务端是最终真相，若与覆盖层冲突（例如
 ///   在网页端取消过赞），以服务端为准并移除覆盖层里的旧值，
 ///   避免覆盖层与真实状态永久分叉。
+///
+/// **表态**（`vote_type`，1.9.7 新增）：动态侧的值不再是一个 bool，而是
+/// **表态 id**（见 [VoteStates]）—— 这样长按点赞按钮送出态度之后，卡片能
+/// 把那个态度回显在按钮上。为什么只能本机记：动态对象只暴露 `is_voted`
+/// 布尔，读侧拿不到"我这条是什么状态"（详见 `vote_states.dart`）。
+/// 对账口径没变，**只对到"赞没赞"这一层** —— 态度本身无法与服务端核对。
 class VoteOverlay {
   VoteOverlay._();
 
@@ -30,10 +37,17 @@ class VoteOverlay {
   /// public：数据备份导出/导入需要按同一键名读写原始 JSON。
   static const String kvKey = 'simple_vote_overlay';
 
-  /// postId → 最终点赞态。
-  final Map<String, bool> _posts = {};
+  /// postId → 最终表态（`vote_type`；[VoteStates.plain] = 普通赞）。
+  ///
+  /// 语义：**有键 = 已赞**，值是那条赞带的态度。
+  /// 1.9.6 及以前这里是 `Map<String, bool>`，读取时兼容迁移（见
+  /// [_absorbPosts]）。
+  final Map<String, String> _posts = {};
 
   /// commentId → 最终点赞态（主楼与回复楼层同一 id 空间）。
+  ///
+  /// 评论侧仍是二值：`v2|v3/comment_votes` **没有读接口**（405），
+  /// 带 `vote_type` 虽然返回 201 却无从读回校验，所以不冒这个险。
   final Map<String, bool> _comments = {};
 
   bool _loaded = false;
@@ -51,8 +65,8 @@ class VoteOverlay {
       if (raw != null && raw.isNotEmpty) {
         final decoded = jsonDecode(raw);
         if (decoded is Map) {
-          _absorb(decoded['posts'], _posts);
-          _absorb(decoded['comments'], _comments);
+          _absorbPosts(decoded['posts'], _posts);
+          _absorbComments(decoded['comments'], _comments);
         }
       }
     } catch (e) {
@@ -64,7 +78,25 @@ class VoteOverlay {
     }
   }
 
-  static void _absorb(dynamic raw, Map<String, bool> into) {
+  /// 动态侧：值是表态 id。旧版本存的是 bool（`true` = 普通赞；
+  /// `false` 只说明"当时没赞"，没有信息量，直接丢）。
+  static void _absorbPosts(dynamic raw, Map<String, String> into) {
+    if (raw is! Map) return;
+    raw.forEach((k, v) {
+      final id = k.toString();
+      if (id.isEmpty) return;
+      if (v is bool) {
+        if (v) into[id] = VoteStates.plain;
+        return;
+      }
+      final value = v?.toString() ?? '';
+      if (value.isEmpty) return;
+      into[id] = value;
+    });
+  }
+
+  /// 评论侧：值仍是 bool。
+  static void _absorbComments(dynamic raw, Map<String, bool> into) {
     if (raw is! Map) return;
     raw.forEach((k, v) {
       final id = k.toString();
@@ -97,11 +129,19 @@ class VoteOverlay {
   }
 
   /// 动态点赞成功后的记录（最终态，不是"点了一下"）。
-  Future<void> recordPost(String postId, {required bool voted}) async {
+  ///
+  /// [voteType] 传具体表态（[VoteStates.all] 里的 id）= 带态度的赞，
+  /// 传 [VoteStates.plain] = 普通赞，传 null = **未赞**（取消，记录删掉）。
+  Future<void> recordPost(String postId, {String? voteType}) async {
     if (postId.isEmpty) return;
     await _ensureLoaded();
-    if (_posts[postId] == voted) return;
-    _posts[postId] = voted;
+    if (voteType == null) {
+      if (_posts.remove(postId) == null) return;
+      await _persist();
+      return;
+    }
+    if (_posts[postId] == voteType) return;
+    _posts[postId] = voteType;
     await _persist();
   }
 
@@ -113,6 +153,17 @@ class VoteOverlay {
     _comments[commentId] = voted;
     await _persist();
   }
+
+  // ---------------------------------------------------------------- 读取
+
+  /// 我这条动态送出的表态（普通赞、没记录都返回 null）。
+  ///
+  /// **同步**纯内存读，给卡片按钮回显用：覆盖层在内容解析阶段
+  /// （[syncPosts]）就已载入，卡片渲染时拿得到。
+  String? postVoteType(String postId) => _posts[postId];
+
+  /// 我这条动态是否处于已赞态（覆盖层口径）。
+  bool isPostVoted(String postId) => _posts.containsKey(postId);
 
   // ---------------------------------------------------------------- 同步
 
@@ -126,11 +177,10 @@ class VoteOverlay {
     if (_posts.isEmpty) return;
     var dropped = false;
     for (final p in posts) {
-      final o = _posts[p.id];
-      if (o == null) continue;
+      if (!_posts.containsKey(p.id)) continue;
       if (fromCache) {
-        if (p.isVoted != o) p.isVoted = o;
-      } else if (p.isVoted != o) {
+        if (!p.isVoted) p.isVoted = true;
+      } else if (!p.isVoted) {
         // 网络真相与本地记录冲突：以服务端为准，移除旧记录。
         _posts.remove(p.id);
         dropped = true;
