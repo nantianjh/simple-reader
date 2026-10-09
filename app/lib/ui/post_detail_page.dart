@@ -7,6 +7,7 @@ import '../api/api_exception.dart';
 import '../api/models.dart';
 import '../api/simple_api.dart';
 import '../state/app_scope.dart';
+import '../data/settings.dart';
 import '../util/format.dart';
 import 'actions.dart';
 import 'collection_detail_page.dart';
@@ -38,6 +39,22 @@ class _PostDetailPageState extends State<PostDetailPage> {
   final SimpleApi _api = SimpleApi();
   final TextEditingController _commentInput = TextEditingController();
   final FocusNode _commentFocus = FocusNode();
+  final ScrollController _scroll = ScrollController();
+
+  /// 挂在评论区上：评论加载结束但没有内容时，退而求其次把标题置顶。
+  final GlobalKey _commentKey = GlobalKey();
+
+  /// 挂在第一条评论上：定位目标不是「评论区标题刚露头」，而是第一条
+  /// 评论的内容行对齐屏幕顶 —— 长评论区（多层回复）只露标题的话，
+  /// 评论本体全在视口外，用户还得自己往下翻。
+  final GlobalKey _firstCommentKey = GlobalKey();
+
+  /// 「点开正文始终定位到评论区」定位是否仍在进行。
+  ///
+  /// 评论是异步加载的：首帧循环推进到评论区时列表多半还在转圈，
+  /// 第一条评论的坐标拿不到；此时本标记保持 true，等 [_loadComments]
+  /// 首页到达后的 post-frame 回调用 [_alignFirstComment] 收尾。
+  bool _locatingComments = false;
 
   final List<Comment> _comments = [];
   String? _cursor;
@@ -68,6 +85,13 @@ class _PostDetailPageState extends State<PostDetailPage> {
   void initState() {
     super.initState();
     _loadComments(first: true);
+    // 「点开正文始终定位到评论区」（设置开关，默认关）：等首帧布局落地后
+    // 开始定位，最终落点是「第一条评论对齐屏幕顶」。评论区可能在很长的
+    // 正文之下（列表懒构建），用分步推进的方式够到它，见 [_scrollToComments]。
+    if (AppSettings.instance.openPostAtComments) {
+      _locatingComments = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToComments());
+    }
     // 键盘与表情面板互斥：聚焦输入框时收起面板。
     _commentFocus.addListener(() {
       if (_commentFocus.hasFocus && _emojiPanelOpen && mounted) {
@@ -80,7 +104,86 @@ class _PostDetailPageState extends State<PostDetailPage> {
   void dispose() {
     _commentInput.dispose();
     _commentFocus.dispose();
+    _scroll.dispose();
     super.dispose();
+  }
+
+  /// 定位「点开正文始终定位到评论区」：第一条评论对齐屏幕顶。
+  ///
+  /// 详情页 ListView 是懒构建的：正文很长时评论区第一帧未必有
+  /// RenderObject，因此先等帧、够不到就向下跳一截再等，最多推进 12 次
+  /// （详情页总高度有限，足够兜底）。评论列表异步加载，第一条评论的
+  /// GlobalKey 往往要等首页数据到达才挂上 —— 若推进到列表底部时评论
+  /// 还在加载，就把收尾交给 [_loadComments] 的 post-frame 回调；
+  /// 已加载完但为空/出错，则退而求其次把评论区标题置顶。
+  Future<void> _scrollToComments() async {
+    for (var attempt = 0; attempt < 12; attempt++) {
+      if (!mounted) return;
+      final ctx = _firstCommentKey.currentContext;
+      if (ctx != null && ctx.mounted) {
+        await _alignFirstComment();
+        return;
+      }
+      if (!_scroll.hasClients) {
+        await _nextFrame();
+        continue;
+      }
+      final next = (_scroll.offset + _scroll.position.viewportDimension * 0.8)
+          .clamp(0.0, _scroll.position.maxScrollExtent);
+      if (next <= _scroll.offset + 1) {
+        // 已推到列表底部仍够不到第一条评论：
+        // 评论还在加载 → 等 [_loadComments] 回调收尾；否则标题置顶兜底。
+        if (!_loading) await _alignFirstComment();
+        return;
+      }
+      _scroll.jumpTo(next);
+      await _nextFrame();
+    }
+    // 步数耗尽（正文极长）：交给评论加载回调收尾，它够不到会标题置顶。
+  }
+
+  /// 把第一条评论对齐到视口顶（评论区已构建后调用）。
+  ///
+  /// `alignment: 0.0` = 目标顶边与视口顶边重合，即「第一条评论的内容行
+  /// 就在屏幕显示区域第一行」。够不到第一条（评论为空/加载失败）时，
+  /// 退而求其次把评论区标题置顶。
+  Future<void> _alignFirstComment() async {
+    if (!mounted) return;
+    var ctx = _firstCommentKey.currentContext;
+    if (ctx == null || !ctx.mounted) {
+      await _nextFrame();
+      if (!mounted) return;
+      ctx = _firstCommentKey.currentContext;
+    }
+    if (ctx != null && ctx.mounted) {
+      await Scrollable.ensureVisible(
+        ctx,
+        alignment: 0.0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
+    } else {
+      final section = _commentKey.currentContext;
+      if (section != null && section.mounted) {
+        await Scrollable.ensureVisible(
+          section,
+          alignment: 0.0,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+        );
+      }
+    }
+    _locatingComments = false;
+  }
+
+  /// 等一帧结束（带超时兜底，避免无帧环境挂死）。
+  Future<void> _nextFrame() async {
+    try {
+      await WidgetsBinding.instance.endOfFrame
+          .timeout(const Duration(milliseconds: 500));
+    } on Exception {
+      // 忽略：继续下一步，最差情况是这次定位没生效。
+    }
   }
 
   /// [mode] 控制缓存策略：常规进入用缓存优先；发表评论后的刷新必须强制
@@ -114,6 +217,12 @@ class _PostDetailPageState extends State<PostDetailPage> {
         _hasMore = page.hasMore;
         _loading = false;
       });
+      // 定位仍在进行时，首页评论到达后帧末收尾（第一条评论此刻才挂上 key）。
+      if (first && _locatingComments) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _alignFirstComment();
+        });
+      }
     } on ApiException catch (e) {
       if (!mounted) return;
       if (e.requiresReauth) app.markUnauthorized(e.message);
@@ -121,12 +230,23 @@ class _PostDetailPageState extends State<PostDetailPage> {
         _error = e.message;
         _loading = false;
       });
+      // 加载失败也收尾定位：够不到第一条评论时标题置顶兜底。
+      if (_locatingComments) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _alignFirstComment();
+        });
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _error = '加载评论失败：$e';
         _loading = false;
       });
+      if (_locatingComments) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _alignFirstComment();
+        });
+      }
     }
   }
 
@@ -286,11 +406,12 @@ class _PostDetailPageState extends State<PostDetailPage> {
         children: [
           Expanded(
             child: ListView(
+              controller: _scroll,
               padding: const EdgeInsets.only(bottom: 20),
               children: [
                 _postSection(post),
                 const SizedBox(height: 8),
-                _commentSection(),
+                KeyedSubtree(key: _commentKey, child: _commentSection()),
               ],
             ),
           ),
@@ -559,7 +680,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
               ),
             )
           else ...[
-            for (final c in _comments) _commentTile(c),
+            for (var i = 0; i < _comments.length; i++)
+              _commentTile(_comments[i],
+                  locateKey: i == 0 ? _firstCommentKey : null),
             if (_hasMore)
               Center(
                 child: TextButton(
@@ -573,12 +696,14 @@ class _PostDetailPageState extends State<PostDetailPage> {
     );
   }
 
-  Widget _commentTile(Comment c) {
+  Widget _commentTile(Comment c, {Key? locateKey}) {
     // 点过「查看全部回复」的评论用全量列表，否则用 preview_replies。
     final replies = _expandedReplies[c.id] ?? c.replies;
     final hidden = c.repliesCount - replies.length;
 
     return Padding(
+      // locateKey：第一条评论挂 [_firstCommentKey]，供定位到屏幕顶。
+      key: locateKey,
       padding: const EdgeInsets.only(bottom: 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

@@ -167,6 +167,15 @@ abstract class PagedListController extends ChangeNotifier {
   /// 没有上限就会无休止翻页（每页至少 1.2s 串行限速）。
   static const int _maxAutoFetchPages = 30;
 
+  /// 自动续抓里单页抓取失败后的重试次数与间隔。
+  ///
+  /// 背景（2026-10-08 实机日志）：第 11 页请求 30s 超时一次，整个续抓
+  /// 直接中止在 10 页，用户继续下滑才在 4 页之后碰到分界 —— 表现为
+  /// 「自动抓取漏了几页」。单次网络抖动/服务端瞬时无响应不该终结整批
+  /// 抓取，同一页退避重试几次再放弃。
+  static const int _maxPageRetries = 3;
+  static const Duration _pageRetryDelay = Duration(seconds: 5);
+
   /// 本地缓存覆盖到的最深页号（0 起），-1 = 未知。
   ///
   /// 与 [_cursors] 的长度不是一回事：最后一页抓取成功且服务端说还有更多时，
@@ -689,7 +698,7 @@ abstract class PagedListController extends ChangeNotifier {
           reason = 'limit';
           break;
         }
-        final ok = await nextPage(mode: CacheMode.networkFirst);
+        final ok = await _nextPageWithRetry();
         rounds++;
         if (!ok) {
           reason = 'error';
@@ -722,6 +731,11 @@ abstract class PagedListController extends ChangeNotifier {
           '自动续抓中止：第 ${(_lastPage ?? 0) + 2} 页抓取失败'
           '（已抓 $rounds 页，共 ${_flat.length} 条）',
         );
+        // 失败不再静默（2026-10-08：单次超时中止后被当成"抓完了"）：
+        // 如实告知停在哪、已抓多少，用户可以稍后下滑继续或再次搜索。
+        setNotice('自动续抓在第 ${(_lastPage ?? 0) + 2} 页失败，已先抓到'
+            '第 ${_lastPage != null ? _lastPage! + 1 : 0} 页（共 ${_flat.length} 条）；'
+            '可稍后向下滑动继续加载，或再次点击搜索补齐');
       } else {
         log.i(LogTag.page, '自动续抓被取消（已抓 $rounds 页）');
       }
@@ -731,6 +745,32 @@ abstract class PagedListController extends ChangeNotifier {
         _autoFetching = false;
         notifyListeners();
       }
+    }
+  }
+
+  /// 续抓的单页推进：失败自动退避重试。
+  ///
+  /// [nextPage] 返回 false 有两种含义，必须区分对待：
+  /// * `!hasNextPage` —— 服务端到底（上一页说没有更多了），这是**正常终止**，
+  ///   不重试（重试只会原样再失败一次）；
+  /// * 其余（请求超时 / 429 / 网络抖动等，`_phase == error`）—— **瞬时失败**，
+  ///   退避 [_pageRetryDelay] 后重试同一页，最多 [_maxPageRetries] 次。
+  /// 重试走的是同一游标，服务端序列没变时拿到的是同一页，不存在重复内容
+  /// （跨页重复由 [_rebuild] 的去重兜底）。
+  Future<bool> _nextPageWithRetry() async {
+    for (var attempt = 0; ; attempt++) {
+      if (_autoFetchCanceled) return false;
+      final ok = await nextPage(mode: CacheMode.networkFirst);
+      if (ok) return true;
+      if (!hasNextPage) return false; // 服务端到底，不是失败
+      if (attempt >= _maxPageRetries) return false;
+      log.w(
+        LogTag.page,
+        '自动续抓：第 ${(_lastPage ?? 0) + 2} 页抓取失败'
+        '（${_error ?? '未知原因'}），${_pageRetryDelay.inSeconds}s 后重试'
+        '（第 ${attempt + 1}/$_maxPageRetries 次）',
+      );
+      await Future<void>.delayed(_pageRetryDelay);
     }
   }
 

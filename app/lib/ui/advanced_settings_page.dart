@@ -397,18 +397,7 @@ class _AdvancedSettingsPageState extends State<AdvancedSettingsPage> {
             onTap: _readPosCount == 0 ? null : _clearReadPositions,
           ),
           const Divider(height: 18),
-          SwitchListTile(
-            value: settings.askResumeOnSearch,
-            onChanged: (v) => settings.setAskResumeOnSearch(v),
-            title: Text('搜索时提示续读',
-                style: TextStyle(fontSize: 14, color: AppTheme.inkPrimary)),
-            subtitle: Text(
-              '命中续读点时询问是否接着上次的位置读',
-              style: TextStyle(fontSize: 12, color: AppTheme.inkTertiary),
-            ),
-            contentPadding: EdgeInsets.zero,
-            dense: true,
-          ),
+          const Divider(height: 18),
           SwitchListTile(
             value: settings.showReadMarkers,
             onChanged: (v) => settings.setShowReadMarkers(v),
@@ -629,20 +618,6 @@ class _AdvancedSettingsPageState extends State<AdvancedSettingsPage> {
                 style: TextStyle(fontSize: 14, color: AppTheme.inkPrimary)),
             subtitle: Text(
               '关闭后正文与分享链接改用系统浏览器',
-              style: TextStyle(fontSize: 12, color: AppTheme.inkTertiary),
-            ),
-            contentPadding: EdgeInsets.zero,
-            dense: true,
-          ),
-          const Divider(height: 18),
-          SwitchListTile(
-            value: settings.interactionButtonsOnRight,
-            onChanged: (v) => settings.setInteractionButtonsOnRight(v),
-            title: Text('互动按钮右置',
-                style: TextStyle(fontSize: 14, color: AppTheme.inkPrimary)),
-            subtitle: Text(
-              '列表里的点赞/评论/收藏放在右侧，展开全文与折叠放到左侧；'
-              '关闭则两者左右对调',
               style: TextStyle(fontSize: 12, color: AppTheme.inkTertiary),
             ),
             contentPadding: EdgeInsets.zero,

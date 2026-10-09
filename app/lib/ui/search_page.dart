@@ -99,6 +99,12 @@ class _SearchPageState extends State<SearchPage>
     //   没缓存才联网。切换搜索词不应触发联网重抓。
     final sameTerm = _search.hasSearched && _search.keyword == q;
 
+    // 新一轮抓取开始：清掉上一轮「从最早的一条开始」的一次性定位请求，
+    // 否则下一轮抓完即使再选同样的选项，列表侧也会因"已执行过"不再定位。
+    if (_resumeAtBoundary && mounted) {
+      setState(() => _resumeAtBoundary = false);
+    }
+
     FocusScope.of(context).unfocus();
     _historyMode = false;
 
@@ -129,6 +135,106 @@ class _SearchPageState extends State<SearchPage>
       await _jumpToReadPosition();
     }
     if (mounted) setState(() {});
+  }
+
+  // ---------------------------------------------------- 抓取完成后的去处
+
+  /// 自动续抓结束后的收尾：按用户本次选择 / 记住的偏好决定从哪里开始看。
+  ///
+  /// 只有「正常抓完」（接上分界 / 服务端到底）才询问或定位；失败、达上限、
+  /// 被打断的收尾保持回顶 —— 那几种情况分界语义不完整，且失败已有横幅提示。
+  Future<void> _handleAutoFetchFinished() async {
+    final reason = _search.autoFetchStopReason;
+    final finished = reason == 'boundary' || reason == 'end';
+    if (!finished) {
+      _jumpTop();
+      return;
+    }
+    switch (AppSettings.instance.autoFetchResume) {
+      case AutoFetchResume.newest:
+        _jumpTop();
+        return;
+      case AutoFetchResume.oldest:
+        setState(() => _resumeAtBoundary = true);
+        return;
+      case AutoFetchResume.ask:
+        await _askStartReading();
+        return;
+    }
+  }
+
+  /// 回到列表顶部（先看最新的内容）。
+  void _jumpTop() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      if (_scroll.offset > 0) _scroll.jumpTo(0);
+    });
+  }
+
+  /// 抓取完成询问：从最新的开始，还是从最早的一条开始（接着上次读）。
+  ///
+  /// 勾选「记住选择」后写入设置（高级设置里可改回「每次询问」）；
+  /// 直接关掉对话框视为「从最新的开始」（与旧版行为一致）。
+  Future<void> _askStartReading() async {
+    var remember = false;
+    final picked = await showDialog<AutoFetchResume>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('抓取完成', style: TextStyle(fontSize: 17)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '已抓到「${_search.keyword}」的新内容，'
+                '共 ${_search.pageCount} 页 · ${_search.itemCount} 条。'
+                '从哪里开始看？',
+                style: TextStyle(
+                  fontSize: 13.5,
+                  height: 1.6,
+                  color: AppTheme.inkSecondary,
+                ),
+              ),
+              const SizedBox(height: 4),
+              CheckboxListTile(
+                value: remember,
+                onChanged: (v) => setLocal(() => remember = v ?? false),
+                title: const Text('记住选择，不再询问',
+                    style: TextStyle(fontSize: 14)),
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                dense: true,
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () =>
+                  Navigator.of(ctx).pop(AutoFetchResume.oldest),
+              child: const Text('从最早的一条开始'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.of(ctx).pop(AutoFetchResume.newest),
+              child: const Text('从最新的开始'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    // 关掉对话框 = 从最新的开始（保持旧版行为）。
+    final choice = picked ?? AutoFetchResume.newest;
+    if (remember) {
+      await AppSettings.instance.setAutoFetchResume(choice);
+    }
+    if (choice == AutoFetchResume.oldest) {
+      setState(() => _resumeAtBoundary = true);
+    } else {
+      _jumpTop();
+    }
   }
 
   /// 续读询问对话框。复选框默认勾选「续读到上次位置」。
@@ -243,6 +349,10 @@ class _SearchPageState extends State<SearchPage>
   /// 用于识别"等待态 → 列表"的转换：转换发生时列表是新建的，视口默认在
   /// 顶端，但仍显式回顶一次 —— 用户应当从最新内容开始往下读。
   bool _autoFetchWasActive = false;
+
+  /// 「从最早的一条开始」：把分界滚进视口（传给 [PagedPostList] 的一次性
+  /// 请求）。由抓取完成后的询问/记住的偏好置位。
+  bool _resumeAtBoundary = false;
 
   /// 是否正在看「历史搜索词列表」。
   ///
@@ -435,9 +545,10 @@ class _SearchPageState extends State<SearchPage>
     }
     if (_autoFetchWasActive) {
       _autoFetchWasActive = false;
+      // 等待态 → 列表的转换处理放到帧后：这里还在 build 中，
+      // 弹窗 / setState 必须等布局落地。
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_scroll.hasClients) return;
-        if (_scroll.offset > 0) _scroll.jumpTo(0);
+        if (mounted) _handleAutoFetchFinished();
       });
     }
     if (_search.isEmptyResult) return _noResult();
@@ -446,6 +557,7 @@ class _SearchPageState extends State<SearchPage>
       controller: _search,
       scrollController: _scroll,
       tracker: _tracker,
+      resumeAtBoundary: _resumeAtBoundary,
       header: Column(
         children: [
           _statusBanner(),
@@ -499,8 +611,7 @@ class _SearchPageState extends State<SearchPage>
             ),
             const SizedBox(height: 8),
             Text(
-              '已抓到第 ${_search.pageCount} 页 · ${_search.itemCount} 条，'
-              '一直抓到「上次浏览到这儿」为止',
+              '已抓到第 ${_search.pageCount} 页 · ${_search.itemCount} 条',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 12.5,

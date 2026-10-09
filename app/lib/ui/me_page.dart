@@ -16,8 +16,12 @@ import 'widgets/user_avatar.dart';
 ///
 /// 需求调整：诊断及其下方的本地数据 / 凭证操作 / 关于等设置项已收进
 /// 「高级设置」二级页（[AdvancedSettingsPage]）；本页保留账号、凭证、
-/// 外观、搜索四张卡，以及「切换到网页版」（需求明确要求留在本页）
-/// 与「高级设置」两个入口。
+/// 外观、搜索、浏览与交互五张卡，以及「切换到网页版」（需求明确要求
+/// 留在本页）与「高级设置」两个入口。
+///
+/// **放置规则（2026-10-09 约定）**：凡是用户直接感知的交互开关
+/// （互动按钮位置、详情页定位、抓取后起始位置、续读询问这类）
+/// 一律放本页一级，不进高级设置二级页。
 class MePage extends StatefulWidget {
   const MePage({super.key});
 
@@ -177,6 +181,11 @@ class _MePageState extends State<MePage> with AutomaticKeepAliveClientMixin {
           AnimatedBuilder(
             animation: AppSettings.instance,
             builder: (context, _) => _searchCard(),
+          ),
+          const SizedBox(height: 14),
+          AnimatedBuilder(
+            animation: AppSettings.instance,
+            builder: (context, _) => _browseCard(),
           ),
           const SizedBox(height: 14),
           _entriesCard(),
@@ -378,6 +387,136 @@ class _MePageState extends State<MePage> with AutomaticKeepAliveClientMixin {
         ],
       ),
     );
+  }
+
+  // -------------------------------------------------------- 浏览与交互卡
+  //
+  // 放置规则见类注释：用户直接感知的交互开关一律放本页一级。
+
+  Widget _browseCard() {
+    final settings = AppSettings.instance;
+    return _card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _cardTitle('浏览与交互'),
+          const SizedBox(height: 4),
+          SwitchListTile(
+            value: settings.interactionButtonsOnRight,
+            onChanged: (v) => settings.setInteractionButtonsOnRight(v),
+            title: Text('互动按钮右置',
+                style: TextStyle(fontSize: 14, color: AppTheme.inkPrimary)),
+            subtitle: Text(
+              '列表里的点赞/评论/收藏放在右侧，展开全文与折叠放到左侧；'
+              '关闭则两者左右对调',
+              style: TextStyle(fontSize: 12, color: AppTheme.inkTertiary),
+            ),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+          SwitchListTile(
+            value: settings.openPostAtComments,
+            onChanged: (v) => settings.setOpenPostAtComments(v),
+            title: Text('点开正文始终定位到评论区',
+                style: TextStyle(fontSize: 14, color: AppTheme.inkPrimary)),
+            subtitle: Text(
+              '打开内容详情时直接跳到评论区，不从正文顶部开始看',
+              style: TextStyle(fontSize: 12, color: AppTheme.inkTertiary),
+            ),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+          const Divider(height: 18),
+          _actionRow(
+            icon: Icons.flag_outlined,
+            title: '重抓完成后从哪开始',
+            subtitle: settings.autoFetchResume.description,
+            onTap: _pickAutoFetchResume,
+          ),
+          SwitchListTile(
+            value: settings.askResumeOnSearch,
+            onChanged: (v) => settings.setAskResumeOnSearch(v),
+            title: Text('搜索时提示续读',
+                style: TextStyle(fontSize: 14, color: AppTheme.inkPrimary)),
+            subtitle: Text(
+              '命中续读点时询问是否接着上次的位置读',
+              style: TextStyle(fontSize: 12, color: AppTheme.inkTertiary),
+            ),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 选择「重新抓取（同词再提交 / 下拉刷新）完成后从哪里开始看」。
+  ///
+  /// 与抓取完成弹窗里的「记住选择」共用同一个设置项；选「每次询问」即
+  /// 恢复弹窗。样式沿用缓存保留期限的选择对话框。
+  Future<void> _pickAutoFetchResume() async {
+    final current = AppSettings.instance.autoFetchResume;
+    final picked = await showDialog<AutoFetchResume>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('重抓完成后从哪开始', style: TextStyle(fontSize: 17)),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+            child: Text(
+              '同一个词再次搜索（或下拉刷新）会自动把新内容抓齐，'
+              '抓完后从哪里开始看由此处决定。',
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.6,
+                color: AppTheme.inkSecondary.withValues(alpha: 0.9),
+              ),
+            ),
+          ),
+          for (final v in AutoFetchResume.values)
+            InkWell(
+              onTap: () => Navigator.of(ctx).pop(v),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(22, 10, 18, 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            v.label,
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: AppTheme.inkPrimary,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            v.description,
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: AppTheme.inkTertiary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (v == current)
+                      Icon(Icons.check_rounded,
+                          size: 18, color: AppTheme.accent),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+
+    if (picked == null || !mounted) return;
+    await AppSettings.instance.setAutoFetchResume(picked);
+    if (!mounted) return;
+    _toast('设置已保存');
   }
 
   // ----------------------------------------------------------- 入口卡

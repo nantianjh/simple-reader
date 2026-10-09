@@ -30,6 +30,26 @@ enum CacheRetention {
   }
 }
 
+/// 重新抓取（同词再提交 / 下拉刷新）自动续抓完成后，从哪里开始看。
+enum AutoFetchResume {
+  ask('ask', '每次询问', '抓取完成后弹窗选择，可勾选记住不再问'),
+  newest('newest', '从最新的开始', '回到列表顶部，先看刚抓到的新内容'),
+  oldest('oldest', '从最早的一条开始', '跳到「上次浏览到这儿」分界处，接着上次往下读');
+
+  const AutoFetchResume(this.key, this.label, this.description);
+
+  final String key;
+  final String label;
+  final String description;
+
+  static AutoFetchResume fromKey(String k) {
+    for (final v in AutoFetchResume.values) {
+      if (v.key == k) return v;
+    }
+    return AutoFetchResume.ask;
+  }
+}
+
 /// 应用设置。
 ///
 /// 用 [ChangeNotifier] 单例承载，页面通过 `AnimatedBuilder` 订阅，
@@ -52,6 +72,8 @@ class AppSettings extends ChangeNotifier {
   List<String> _blockedKeywords = const <String>[];
   bool _openLinksInApp = true;
   bool _interactionButtonsOnRight = true;
+  bool _openPostAtComments = false;
+  AutoFetchResume _autoFetchResume = AutoFetchResume.ask;
   bool _firstRunDone = false;
   bool _readingIntroShown = false;
   bool _collectionsIntroShown = false;
@@ -81,6 +103,15 @@ class AppSettings extends ChangeNotifier {
   /// 2026-09-22 需求：默认右置 —— 右手单手拿机时拇指正好落在右下角；
   /// 关闭则回到左侧（旧版布局）。操作类按钮（展开全文 / 折叠）永远在对侧。
   bool get interactionButtonsOnRight => _interactionButtonsOnRight;
+
+  /// 重新抓取自动续抓完成后从哪里开始看（默认每次询问）。
+  AutoFetchResume get autoFetchResume => _autoFetchResume;
+
+  /// 点开正文（内容详情页）时是否始终定位到评论区。
+  ///
+  /// 2026-10-09 需求：默认关闭 —— 从正文顶部看；开启后详情页一打开
+  /// 就把评论区滚进视口（正文长的时候尤其有用）。
+  bool get openPostAtComments => _openPostAtComments;
 
   /// 首次引导是否已完成（登录成功后置位）。
   ///
@@ -121,6 +152,10 @@ class AppSettings extends ChangeNotifier {
     if (inApp is bool) _openLinksInApp = inApp;
     final interactRight = m['interactionButtonsOnRight'];
     if (interactRight is bool) _interactionButtonsOnRight = interactRight;
+    final atComments = m['openPostAtComments'];
+    if (atComments is bool) _openPostAtComments = atComments;
+    final resume = m['autoFetchResume'];
+    if (resume is String) _autoFetchResume = AutoFetchResume.fromKey(resume);
     final firstRun = m['firstRunDone'];
     if (firstRun is bool) _firstRunDone = firstRun;
     final intro = m['readingIntroShown'];
@@ -170,6 +205,20 @@ class AppSettings extends ChangeNotifier {
   Future<void> setInteractionButtonsOnRight(bool v) async {
     if (_interactionButtonsOnRight == v) return;
     _interactionButtonsOnRight = v;
+    notifyListeners();
+    await _persist();
+  }
+
+  Future<void> setAutoFetchResume(AutoFetchResume v) async {
+    if (_autoFetchResume == v) return;
+    _autoFetchResume = v;
+    notifyListeners();
+    await _persist();
+  }
+
+  Future<void> setOpenPostAtComments(bool v) async {
+    if (_openPostAtComments == v) return;
+    _openPostAtComments = v;
     notifyListeners();
     await _persist();
   }
@@ -263,6 +312,8 @@ class AppSettings extends ChangeNotifier {
         'blockedKeywords': _blockedKeywords,
         'openLinksInApp': _openLinksInApp,
         'interactionButtonsOnRight': _interactionButtonsOnRight,
+        'openPostAtComments': _openPostAtComments,
+        'autoFetchResume': _autoFetchResume.key,
         'firstRunDone': _firstRunDone,
         'readingIntroShown': _readingIntroShown,
         'collectionsIntroShown': _collectionsIntroShown,

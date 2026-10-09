@@ -28,6 +28,7 @@ class PagedPostList extends StatefulWidget {
     required this.itemBuilder,
     this.header,
     this.enableRefresh = true,
+    this.resumeAtBoundary = false,
   });
 
   final PagedListController controller;
@@ -41,6 +42,12 @@ class PagedPostList extends StatefulWidget {
   final Widget? header;
 
   final bool enableRefresh;
+
+  /// 为 true 时把「上次浏览到这儿」分界滚进视口（"从最早的一条开始"）。
+  ///
+  /// 自动续抓完成后由页面按用户选择/记住的偏好传入；只在第一次生效
+  /// （见 [_boundaryRevealed]），后续重建不会反复拉扯滚动位置。
+  final bool resumeAtBoundary;
 
   @override
   State<PagedPostList> createState() => _PagedPostListState();
@@ -109,6 +116,12 @@ class _PagedPostListState extends State<PagedPostList> {
 
   /// 挂在列表外层 [RepaintBoundary] 上，供定格帧截屏取层。
   final GlobalKey _listBoundaryKey = GlobalKey();
+
+  /// 挂在「上次浏览到这儿」分界条上，供「从最早的一条开始」定位。
+  final GlobalKey _markerKey = GlobalKey();
+
+  /// 分界定位是否已经执行过（只执行一次，防止重建时反复拉扯）。
+  bool _boundaryRevealed = false;
 
   // ---- 诊断探针（2026-09-20 复测仍跳变临时加入，定位后移除）----
   /// guard 静默出口留痕去重：同一原因 1 秒内只打一条（_onScroll 每帧
@@ -201,6 +214,16 @@ class _PagedPostListState extends State<PagedPostList> {
     widget.scrollController.addListener(_onScroll);
     _ctl.addListener(_onControllerChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) => _autoFill());
+  }
+
+  @override
+  void didUpdateWidget(PagedPostList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 「从最早的一条开始」是每次抓取完成后的一次性请求：参数从 false 翻回
+    // true（下一轮重抓完成又选了它）时，解除"已执行"封锁，允许再定位一次。
+    if (widget.resumeAtBoundary && !oldWidget.resumeAtBoundary) {
+      _boundaryRevealed = false;
+    }
   }
 
   @override
@@ -1081,6 +1104,16 @@ class _PagedPostListState extends State<PagedPostList> {
     final boundary = ctl.cachedBoundary;
     // 跳页入口只在「已加载 ≥ 2 页」时出现（需求：只能跳已加载的范围）。
     final jumpAvailable = _jumpAvailable;
+    // 「从最早的一条开始」（自动续抓完成后用户选择/记住的偏好）：
+    // 把「上次浏览到这儿」分界滚进视口 —— 分界上方那条就是最早的新内容，
+    // 正好接着上次的位置往下读。一次性动作，见 [_boundaryRevealed]。
+    if (widget.resumeAtBoundary &&
+        !_boundaryRevealed &&
+        boundary != null &&
+        boundary < ctl.posts.length) {
+      _boundaryRevealed = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _revealBoundary());
+    }
     final rows = <_Row>[];
     var global = 0;
     for (final page in ctl.pages) {
@@ -1184,15 +1217,48 @@ class _PagedPostListState extends State<PagedPostList> {
     );
   }
 
+  /// 把「上次浏览到这儿」分界滚进视口（「从最早的一条开始」）。
+  ///
+  /// 目标其实不是分界条本身，而是它上方第一条（最早的一条新内容）——
+  /// 借用续读的 [scrollToTrackedItem] 按条目 id 定位（列表懒构建，未渲染的
+  /// 行没有 RenderObject，该助手会分步向下推进），落地后再上移一点，
+  /// 让分界条与第一条旧内容一起露出，"接着上次读"的落点一目了然。
+  Future<void> _revealBoundary() async {
+    final ctl = _ctl;
+    final b = ctl.cachedBoundary;
+    if (b == null || b >= ctl.posts.length) return;
+    final id = ctl.posts[b].id;
+    if (id.isEmpty) return;
+    log.i(LogTag.ui, '从最早的一条开始：定位「上次浏览到这儿」分界（第 ${b + 1} 条）');
+    final ok = await scrollToTrackedItem(
+      scroll: widget.scrollController,
+      tracker: widget.tracker,
+      id: id,
+    );
+    if (!ok || !mounted) return;
+    final scroll = widget.scrollController;
+    if (!scroll.hasClients) return;
+    _inProgrammaticScroll = true;
+    try {
+      // 条目顶格落点向上抬一个分界条的高度，把分界条本身带进视口。
+      final target =
+          (scroll.offset - 72).clamp(0.0, scroll.position.maxScrollExtent);
+      if ((scroll.offset - target).abs() > 0.5) scroll.jumpTo(target);
+    } finally {
+      _inProgrammaticScroll = false;
+    }
+  }
+
   /// 「上次浏览到这儿」分界条：插在新抓取内容与上次已缓存内容之间，
   /// 提示"从这里往下是上次已经浏览过的"。
   ///
   /// 整条做成一条主色色带（淡底 + 上下边线 + 左侧竖条）：它是一条**分界**，
-  /// 必须在快速滑动时也能被一眼扫到，此前那种"细灰线 + 三级灰小字"的
-  /// 权重在瀑布流里几乎等于不存在。
+  /// 必须在快速滑动时也能被一眼扫到。2026-10-09 起文案居中、去掉右侧
+  /// 提示小字 —— 分界条本身已经足够表意。
   Widget _cachedBoundaryMarker() {
     final accent = AppTheme.accent;
     return Container(
+      key: _markerKey,
       decoration: BoxDecoration(
         color: AppTheme.infoBackground,
         border: Border.symmetric(
@@ -1201,6 +1267,7 @@ class _PagedPostListState extends State<PagedPostList> {
       ),
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Container(
             width: 3,
@@ -1220,16 +1287,6 @@ class _PagedPostListState extends State<PagedPostList> {
               fontWeight: FontWeight.w700,
               color: accent,
               letterSpacing: 0.3,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              '往下是上次看过的内容',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.right,
-              style: TextStyle(fontSize: 11.5, color: AppTheme.inkSecondary),
             ),
           ),
         ],
